@@ -6,9 +6,9 @@ import {
   Grid2X2,
   Hand,
   Hash,
+  Hexagon,
   MousePointer2,
   MoveUpRight,
-  Sigma,
   Slash,
   Square,
   Trash2,
@@ -20,14 +20,12 @@ import type { EditorTool } from "@/lib/diagram-editor";
 
 interface FigureBuilderPanelProps {
   activeTool: EditorTool;
-  labelInput: string;
   snapToGrid: boolean;
   gridVisible: boolean;
   coordinatesVisible: boolean;
   hasSelection: boolean;
   pendingCount: number;
   onToolChange: (tool: EditorTool) => void;
-  onLabelChange: (value: string) => void;
   onSnapChange: (value: boolean) => void;
   onGridChange: (value: boolean) => void;
   onCoordinatesChange: (value: boolean) => void;
@@ -42,20 +40,19 @@ const tools = [
   { id: "circle", label: "Circle", shortcut: "C", icon: Circle },
   { id: "rectangle", label: "Rectangle", shortcut: "R", icon: Square },
   { id: "triangle", label: "Triangle", shortcut: "T", icon: Triangle },
+  { id: "angle", label: "Angle", shortcut: "Q", icon: Hexagon },
   { id: "vector", label: "Vector", shortcut: "A", icon: MoveUpRight },
   { id: "label", label: "Label", shortcut: "L", icon: Type },
 ] satisfies { id: EditorTool; label: string; shortcut: string; icon: LucideIcon }[];
 
 export function FigureBuilderPanel({
   activeTool,
-  labelInput,
   snapToGrid,
   gridVisible,
   coordinatesVisible,
   hasSelection,
   pendingCount,
   onToolChange,
-  onLabelChange,
   onSnapChange,
   onGridChange,
   onCoordinatesChange,
@@ -82,15 +79,6 @@ export function FigureBuilderPanel({
       </div>
 
       <div className="mt-auto flex flex-col gap-2">
-        <label className="rail-input" title="Label text">
-          <Sigma className="h-4 w-4 shrink-0" aria-hidden />
-          <input
-            value={labelInput}
-            onChange={(event) => onLabelChange(event.target.value)}
-            placeholder="A"
-            aria-label="Label text"
-          />
-        </label>
         <button
           type="button"
           onClick={() => onSnapChange(!snapToGrid)}

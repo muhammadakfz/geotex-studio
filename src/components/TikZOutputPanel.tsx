@@ -6,6 +6,8 @@ import { unwrapMathLabel } from "@/lib/latex-normalizer";
 interface TikZOutputPanelProps {
   diagram: DiagramModel;
   code: string;
+  includeCartesian: boolean;
+  onIncludeCartesianChange: (value: boolean) => void;
   onCopy: () => void;
   onDownload: () => void;
 }
@@ -34,14 +36,30 @@ function LatexPreview({ diagram }: { diagram: DiagramModel }) {
   );
 }
 
-export function TikZOutputPanel({ diagram, code, onCopy, onDownload }: TikZOutputPanelProps) {
+export function TikZOutputPanel({
+  diagram,
+  code,
+  includeCartesian,
+  onIncludeCartesianChange,
+  onCopy,
+  onDownload,
+}: TikZOutputPanelProps) {
   return (
     <section className="tool-panel">
       <div className="panel-heading">
         <span>TikZ Output</span>
-        <span className="status-pill">semantic</span>
+        <span className="status-pill">{includeCartesian ? "cartesian" : "objects only"}</span>
       </div>
       <LatexPreview diagram={diagram} />
+      <label className="mt-3 flex items-center justify-between gap-3 rounded-sm border border-black bg-white px-3 py-2 text-xs font-bold uppercase tracking-normal text-black">
+        Cartesian guide
+        <input
+          type="checkbox"
+          checked={includeCartesian}
+          onChange={(event) => onIncludeCartesianChange(event.currentTarget.checked)}
+          className="h-4 w-4 accent-black"
+        />
+      </label>
       <pre className="mt-3 max-h-96 overflow-auto rounded-md border border-stone-200 bg-stone-950 p-4 text-xs leading-6 text-stone-100">
         <code>{code}</code>
       </pre>

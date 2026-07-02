@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
-import { Crosshair, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import type {
   DiagramModel,
   DiagramObject,
   DiagramViewport,
   PointCoordinate,
 } from "@/lib/diagram-types";
-import type { EditorTool } from "@/lib/diagram-editor";
+import { createObjectFromDrag, type EditorTool } from "@/lib/diagram-editor";
 import { resizeObjectToBounds } from "@/lib/diagram-geometry";
 import { unwrapMathLabel } from "@/lib/latex-normalizer";
 
@@ -20,6 +20,7 @@ interface DiagramCanvasFallbackProps {
   coordinatesVisible?: boolean;
   onSelectObjects?: (ids: string[]) => void;
   onCanvasPoint?: (point: PointCoordinate) => void;
+  onCanvasDragCreate?: (start: PointCoordinate, end: PointCoordinate) => void;
   onCommitDiagram?: (diagram: DiagramModel, message?: string) => void;
   onViewportChange?: (viewport: DiagramViewport) => void;
 }
@@ -49,6 +50,13 @@ type DragState =
       kind: "pan";
       startClient: PointCoordinate;
       startViewport: DiagramViewport;
+    }
+  | {
+      kind: "create";
+      tool: EditorTool;
+      startSvg: PointCoordinate;
+      currentSvg: PointCoordinate;
+      startDiagram: DiagramModel;
     };
 
 interface SvgPaintProps {
@@ -66,23 +74,84 @@ interface ObjectBounds {
   maxY: number;
 }
 
+interface CursorPosition {
+  point: PointCoordinate;
+  svg: PointCoordinate;
+}
+
+interface CanvasSize {
+  width: number;
+  height: number;
+}
+
 const width = 860;
 const height = 600;
+const defaultCanvasSize: CanvasSize = { width, height };
 const dragCommitThreshold = 0.01;
 
-function toSvg(point: PointCoordinate, diagram: DiagramModel): PointCoordinate {
-  const { minX, maxX, minY, maxY } = diagram.viewport;
+function niceStep(range: number, targetLines: number): number {
+  const rough = Math.max(range / targetLines, 0.0001);
+  const power = 10 ** Math.floor(Math.log10(rough));
+  const normalized = rough / power;
+  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return multiplier * power;
+}
+
+function tickStart(min: number, step: number): number {
+  return Math.ceil(min / step) * step;
+}
+
+function formatTick(value: number): string {
+  const decimals = Math.max(0, Math.min(4, Math.ceil(-Math.log10(Math.abs(value) || 1)) + 1));
+  return Number(value.toFixed(decimals)).toString();
+}
+
+function isDragCreateTool(tool: EditorTool): boolean {
+  return ["segment", "vector", "rectangle", "circle", "triangle", "angle"].includes(tool);
+}
+
+function fitViewportToCanvas(viewport: DiagramViewport, canvas: CanvasSize): DiagramViewport {
+  const rangeX = viewport.maxX - viewport.minX;
+  const rangeY = viewport.maxY - viewport.minY;
+  const canvasAspect = Math.max(canvas.width / canvas.height, 0.01);
+  const viewportAspect = rangeX / rangeY;
+  const centerX = (viewport.minX + viewport.maxX) / 2;
+  const centerY = (viewport.minY + viewport.maxY) / 2;
+
+  if (Math.abs(viewportAspect - canvasAspect) < 0.001) return viewport;
+
+  if (viewportAspect > canvasAspect) {
+    const nextRangeY = rangeX / canvasAspect;
+    return {
+      minX: viewport.minX,
+      maxX: viewport.maxX,
+      minY: centerY - nextRangeY / 2,
+      maxY: centerY + nextRangeY / 2,
+    };
+  }
+
+  const nextRangeX = rangeY * canvasAspect;
   return {
-    x: ((point.x - minX) / (maxX - minX)) * width,
-    y: height - ((point.y - minY) / (maxY - minY)) * height,
+    minX: centerX - nextRangeX / 2,
+    maxX: centerX + nextRangeX / 2,
+    minY: viewport.minY,
+    maxY: viewport.maxY,
   };
 }
 
-function fromSvg(point: PointCoordinate, diagram: DiagramModel): PointCoordinate {
+function toSvg(point: PointCoordinate, diagram: DiagramModel, canvas: CanvasSize = defaultCanvasSize): PointCoordinate {
   const { minX, maxX, minY, maxY } = diagram.viewport;
   return {
-    x: minX + (point.x / width) * (maxX - minX),
-    y: minY + ((height - point.y) / height) * (maxY - minY),
+    x: ((point.x - minX) / (maxX - minX)) * canvas.width,
+    y: canvas.height - ((point.y - minY) / (maxY - minY)) * canvas.height,
+  };
+}
+
+function fromSvg(point: PointCoordinate, diagram: DiagramModel, canvas: CanvasSize = defaultCanvasSize): PointCoordinate {
+  const { minX, maxX, minY, maxY } = diagram.viewport;
+  return {
+    x: minX + (point.x / canvas.width) * (maxX - minX),
+    y: minY + ((canvas.height - point.y) / canvas.height) * (maxY - minY),
   };
 }
 
@@ -98,7 +167,7 @@ function labelText(label?: string): string {
 
 function styleFor(object: DiagramObject, selected: boolean): SvgPaintProps {
   return {
-    stroke: selected ? "#2563eb" : object.style.stroke ?? "#111111",
+    stroke: selected ? "#111111" : object.style.stroke ?? "#111111",
     fill: object.style.fill === "transparent" ? "none" : object.style.fill ?? "none",
     strokeWidth: selected ? Math.max(2.2, object.style.strokeWidth ?? 1.25) : object.style.strokeWidth ?? 1.25,
     strokeDasharray: object.style.dashed ? "8 7" : undefined,
@@ -133,11 +202,16 @@ function labelOffset(position?: string): PointCoordinate {
   }
 }
 
-function renderLabel(object: DiagramObject, anchor: PointCoordinate, diagram: DiagramModel): React.ReactNode {
+function renderLabel(
+  object: DiagramObject,
+  anchor: PointCoordinate,
+  diagram: DiagramModel,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
   const label = object.type === "Label" ? object.text : object.label;
   if (!label) return null;
 
-  const point = toSvg(anchor, diagram);
+  const point = toSvg(anchor, diagram, canvas);
   const offset = labelOffset(object.style.labelPosition);
 
   return (
@@ -152,9 +226,14 @@ function renderLabel(object: DiagramObject, anchor: PointCoordinate, diagram: Di
   );
 }
 
-function renderAngle(object: Extract<DiagramObject, { type: "Angle" }>, diagram: DiagramModel, selected: boolean) {
-  const center = toSvg(object.vertex, diagram);
-  const radius = object.radius * (width / (diagram.viewport.maxX - diagram.viewport.minX));
+function renderAngle(
+  object: Extract<DiagramObject, { type: "Angle" }>,
+  diagram: DiagramModel,
+  selected: boolean,
+  canvas: CanvasSize = defaultCanvasSize,
+) {
+  const center = toSvg(object.vertex, diagram, canvas);
+  const radius = object.radius * (canvas.width / (diagram.viewport.maxX - diagram.viewport.minX));
   return (
     <path
       d={`M ${center.x + radius} ${center.y} A ${radius} ${radius} 0 0 0 ${center.x + radius * 0.7} ${center.y - radius * 0.7}`}
@@ -163,20 +242,24 @@ function renderAngle(object: Extract<DiagramObject, { type: "Angle" }>, diagram:
   );
 }
 
-function gridLines(diagram: DiagramModel): React.ReactNode[] {
+function gridLines(diagram: DiagramModel, canvas: CanvasSize = defaultCanvasSize): React.ReactNode[] {
   if (!diagram.gridVisible) return [];
 
   const lines: React.ReactNode[] = [];
   const rangeX = diagram.viewport.maxX - diagram.viewport.minX;
-  const minorStep = rangeX > 28 ? 2 : rangeX > 14 ? 1 : 0.5;
-  const startX = Math.ceil(diagram.viewport.minX / minorStep) * minorStep;
-  const startY = Math.ceil(diagram.viewport.minY / minorStep) * minorStep;
+  const rangeY = diagram.viewport.maxY - diagram.viewport.minY;
+  const stepX = niceStep(rangeX, 70);
+  const stepY = niceStep(rangeY, 50);
+  const majorX = niceStep(rangeX, 8);
+  const majorY = niceStep(rangeY, 6);
+  const startX = tickStart(diagram.viewport.minX, stepX);
+  const startY = tickStart(diagram.viewport.minY, stepY);
 
-  for (let x = startX; x <= diagram.viewport.maxX; x += minorStep) {
+  for (let x = startX; x <= diagram.viewport.maxX; x += stepX) {
     const rounded = Number(x.toFixed(4));
-    const start = toSvg({ x: rounded, y: diagram.viewport.minY }, diagram);
-    const end = toSvg({ x: rounded, y: diagram.viewport.maxY }, diagram);
-    const major = Math.abs(rounded % 1) < 0.0001;
+    const start = toSvg({ x: rounded, y: diagram.viewport.minY }, diagram, canvas);
+    const end = toSvg({ x: rounded, y: diagram.viewport.maxY }, diagram, canvas);
+    const major = Math.abs(rounded / majorX - Math.round(rounded / majorX)) < 0.0001;
     lines.push(
       <line
         key={`gx-${rounded}`}
@@ -184,16 +267,17 @@ function gridLines(diagram: DiagramModel): React.ReactNode[] {
         y1={start.y}
         x2={end.x}
         y2={end.y}
-        stroke={major ? "#dedbd7" : "#f0eeeb"}
+        stroke={major ? "#d4d4d4" : "#eeeeee"}
+        strokeWidth={major ? 0.9 : 0.55}
       />,
     );
   }
 
-  for (let y = startY; y <= diagram.viewport.maxY; y += minorStep) {
+  for (let y = startY; y <= diagram.viewport.maxY; y += stepY) {
     const rounded = Number(y.toFixed(4));
-    const start = toSvg({ x: diagram.viewport.minX, y: rounded }, diagram);
-    const end = toSvg({ x: diagram.viewport.maxX, y: rounded }, diagram);
-    const major = Math.abs(rounded % 1) < 0.0001;
+    const start = toSvg({ x: diagram.viewport.minX, y: rounded }, diagram, canvas);
+    const end = toSvg({ x: diagram.viewport.maxX, y: rounded }, diagram, canvas);
+    const major = Math.abs(rounded / majorY - Math.round(rounded / majorY)) < 0.0001;
     lines.push(
       <line
         key={`gy-${rounded}`}
@@ -201,7 +285,8 @@ function gridLines(diagram: DiagramModel): React.ReactNode[] {
         y1={start.y}
         x2={end.x}
         y2={end.y}
-        stroke={major ? "#dedbd7" : "#f0eeeb"}
+        stroke={major ? "#d4d4d4" : "#eeeeee"}
+        strokeWidth={major ? 0.9 : 0.55}
       />,
     );
   }
@@ -209,13 +294,17 @@ function gridLines(diagram: DiagramModel): React.ReactNode[] {
   return lines;
 }
 
-function axisLines(diagram: DiagramModel, coordinatesVisible: boolean): React.ReactNode {
+function axisLines(
+  diagram: DiagramModel,
+  coordinatesVisible: boolean,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
   if (!coordinatesVisible) return null;
 
   const axes: React.ReactNode[] = [];
   if (diagram.viewport.minY <= 0 && diagram.viewport.maxY >= 0) {
-    const start = toSvg({ x: diagram.viewport.minX, y: 0 }, diagram);
-    const end = toSvg({ x: diagram.viewport.maxX, y: 0 }, diagram);
+    const start = toSvg({ x: diagram.viewport.minX, y: 0 }, diagram, canvas);
+    const end = toSvg({ x: diagram.viewport.maxX, y: 0 }, diagram, canvas);
     axes.push(
       <line
         key="x-axis"
@@ -223,16 +312,16 @@ function axisLines(diagram: DiagramModel, coordinatesVisible: boolean): React.Re
         y1={start.y}
         x2={end.x}
         y2={end.y}
-        stroke="#78716c"
-        strokeWidth="1.35"
+        stroke="#111111"
+        strokeWidth="1"
         markerEnd="url(#axis-arrow)"
       />,
     );
   }
 
   if (diagram.viewport.minX <= 0 && diagram.viewport.maxX >= 0) {
-    const start = toSvg({ x: 0, y: diagram.viewport.minY }, diagram);
-    const end = toSvg({ x: 0, y: diagram.viewport.maxY }, diagram);
+    const start = toSvg({ x: 0, y: diagram.viewport.minY }, diagram, canvas);
+    const end = toSvg({ x: 0, y: diagram.viewport.maxY }, diagram, canvas);
     axes.push(
       <line
         key="y-axis"
@@ -240,8 +329,8 @@ function axisLines(diagram: DiagramModel, coordinatesVisible: boolean): React.Re
         y1={start.y}
         x2={end.x}
         y2={end.y}
-        stroke="#78716c"
-        strokeWidth="1.35"
+        stroke="#111111"
+        strokeWidth="1"
         markerEnd="url(#axis-arrow)"
       />,
     );
@@ -250,31 +339,37 @@ function axisLines(diagram: DiagramModel, coordinatesVisible: boolean): React.Re
   return <g>{axes}</g>;
 }
 
-function coordinateLabels(diagram: DiagramModel, coordinatesVisible: boolean): React.ReactNode[] {
+function coordinateLabels(
+  diagram: DiagramModel,
+  coordinatesVisible: boolean,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode[] {
   if (!coordinatesVisible) return [];
 
   const labels: React.ReactNode[] = [];
   const rangeX = diagram.viewport.maxX - diagram.viewport.minX;
-  const step = rangeX > 20 ? 2 : 1;
+  const rangeY = diagram.viewport.maxY - diagram.viewport.minY;
+  const stepX = niceStep(rangeX, 8);
+  const stepY = niceStep(rangeY, 6);
   const yAnchor = diagram.viewport.minY <= 0 && diagram.viewport.maxY >= 0 ? 0 : diagram.viewport.minY;
   const xAnchor = diagram.viewport.minX <= 0 && diagram.viewport.maxX >= 0 ? 0 : diagram.viewport.minX;
 
-  for (let x = Math.ceil(diagram.viewport.minX / step) * step; x <= diagram.viewport.maxX; x += step) {
+  for (let x = tickStart(diagram.viewport.minX, stepX); x <= diagram.viewport.maxX; x += stepX) {
     if (Math.abs(x) < 0.0001) continue;
-    const point = toSvg({ x, y: yAnchor }, diagram);
+    const point = toSvg({ x, y: yAnchor }, diagram, canvas);
     labels.push(
-      <text key={`xl-${x}`} x={point.x} y={point.y + 17} textAnchor="middle" className="pointer-events-none select-none fill-stone-500 text-[12px]">
-        {Number(x.toFixed(2))}
+      <text key={`xl-${x}`} x={point.x} y={point.y + 17} textAnchor="middle" className="pointer-events-none select-none fill-neutral-600 font-mono text-[10px]">
+        {formatTick(x)}
       </text>,
     );
   }
 
-  for (let y = Math.ceil(diagram.viewport.minY / step) * step; y <= diagram.viewport.maxY; y += step) {
+  for (let y = tickStart(diagram.viewport.minY, stepY); y <= diagram.viewport.maxY; y += stepY) {
     if (Math.abs(y) < 0.0001) continue;
-    const point = toSvg({ x: xAnchor, y }, diagram);
+    const point = toSvg({ x: xAnchor, y }, diagram, canvas);
     labels.push(
-      <text key={`yl-${y}`} x={point.x + 8} y={point.y + 4} textAnchor="start" className="pointer-events-none select-none fill-stone-500 text-[12px]">
-        {Number(y.toFixed(2))}
+      <text key={`yl-${y}`} x={point.x + 8} y={point.y + 4} textAnchor="start" className="pointer-events-none select-none fill-neutral-600 font-mono text-[10px]">
+        {formatTick(y)}
       </text>,
     );
   }
@@ -480,12 +575,16 @@ function handlesForObject(object: DiagramObject): { id: string; point: PointCoor
   return [...objectHandlesForObject(object), ...boundsHandlesForObject(object)];
 }
 
-function renderSelectionFrame(object: DiagramObject, diagram: DiagramModel): React.ReactNode {
+function renderSelectionFrame(
+  object: DiagramObject,
+  diagram: DiagramModel,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
   if (object.type === "Point" || object.type === "Label") return null;
 
   const bounds = objectBounds(object);
-  const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram);
-  const bottomRight = toSvg({ x: bounds.maxX, y: bounds.minY }, diagram);
+  const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram, canvas);
+  const bottomRight = toSvg({ x: bounds.maxX, y: bounds.minY }, diagram, canvas);
 
   return (
     <rect
@@ -495,11 +594,37 @@ function renderSelectionFrame(object: DiagramObject, diagram: DiagramModel): Rea
       width={bottomRight.x - topLeft.x}
       height={bottomRight.y - topLeft.y}
       fill="none"
-      stroke="#2563eb"
+      stroke="#111111"
       strokeDasharray="5 4"
       strokeWidth="1.5"
       pointerEvents="none"
     />
+  );
+}
+
+function renderCursorReadout(
+  cursor: CursorPosition | null,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
+  if (!cursor) return null;
+
+  const label = `${formatTick(cursor.point.x)}, ${formatTick(cursor.point.y)}`;
+  const boxWidth = Math.max(82, label.length * 7 + 18);
+  const boxHeight = 22;
+  const x = Math.max(8, Math.min(canvas.width - boxWidth - 8, cursor.svg.x + 12));
+  const y = Math.max(8, Math.min(canvas.height - boxHeight - 8, cursor.svg.y - 30));
+
+  return (
+    <g data-testid="cursor-coordinate" pointerEvents="none">
+      <rect x={x} y={y} width={boxWidth} height={boxHeight} fill="#ffffff" stroke="#111111" strokeWidth="1.5" />
+      <text
+        x={x + 9}
+        y={y + 15}
+        className="select-none fill-black font-mono text-[11px]"
+      >
+        {label}
+      </text>
+    </g>
   );
 }
 
@@ -535,34 +660,35 @@ function renderObject(
   object: DiagramObject,
   diagram: DiagramModel,
   selected: boolean,
+  canvas: CanvasSize = defaultCanvasSize,
 ): React.ReactNode {
   if (!object.visibility) return null;
 
   const shared = {
     "data-object-id": object.id,
-    className: "cursor-move transition-all",
+    className: "cursor-move",
   };
 
   switch (object.type) {
     case "Point": {
-      const point = toSvg(object.coordinates, diagram);
+      const point = toSvg(object.coordinates, diagram, canvas);
       return (
         <g key={object.id} {...shared}>
           <circle
             cx={point.x}
             cy={point.y}
             r={selected ? Math.max(6, object.style.pointSize ?? 3.2) : object.style.pointSize ?? 3.2}
-            fill={selected ? "#2563eb" : object.style.fill ?? "#111111"}
+            fill={selected ? "#111111" : object.style.fill ?? "#111111"}
             opacity={object.style.opacity ?? 1}
           />
-          {renderLabel(object, object.coordinates, diagram)}
+          {renderLabel(object, object.coordinates, diagram, canvas)}
         </g>
       );
     }
     case "Segment":
     case "Vector": {
-      const start = toSvg(object.start, diagram);
-      const end = toSvg(object.end, diagram);
+      const start = toSvg(object.start, diagram, canvas);
+      const end = toSvg(object.end, diagram, canvas);
       return (
         <g key={object.id} {...shared}>
           <line
@@ -573,13 +699,13 @@ function renderObject(
             markerEnd={object.type === "Vector" || object.style.arrow ? "url(#arrow)" : undefined}
             {...styleFor(object, selected)}
           />
-          {renderLabel(object, midpoint(object.start, object.end), diagram)}
+          {renderLabel(object, midpoint(object.start, object.end), diagram, canvas)}
         </g>
       );
     }
     case "Line": {
-      const start = toSvg(object.through[0], diagram);
-      const end = toSvg(object.through[1], diagram);
+      const start = toSvg(object.through[0], diagram, canvas);
+      const end = toSvg(object.through[1], diagram, canvas);
       return (
         <line
           key={object.id}
@@ -593,18 +719,23 @@ function renderObject(
       );
     }
     case "Circle": {
-      const center = toSvg(object.center, diagram);
-      const radius = (object.radius / (diagram.viewport.maxX - diagram.viewport.minX)) * width;
+      const center = toSvg(object.center, diagram, canvas);
+      const radius = (object.radius / (diagram.viewport.maxX - diagram.viewport.minX)) * canvas.width;
       return (
         <g key={object.id} {...shared}>
           <circle cx={center.x} cy={center.y} r={radius} {...styleFor(object, selected)} />
-          {renderLabel(object, { x: object.center.x + object.radius * 0.72, y: object.center.y + object.radius * 0.72 }, diagram)}
+          {renderLabel(
+            object,
+            { x: object.center.x + object.radius * 0.72, y: object.center.y + object.radius * 0.72 },
+            diagram,
+            canvas,
+          )}
         </g>
       );
     }
     case "Polygon": {
       const points = object.points.map((point) => {
-        const svg = toSvg(point, diagram);
+        const svg = toSvg(point, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
       return <polygon key={object.id} points={points.join(" ")} {...shared} {...styleFor(object, selected)} />;
@@ -612,32 +743,36 @@ function renderObject(
     case "Angle":
       return (
         <g key={object.id} {...shared}>
-          {renderAngle(object, diagram, selected)}
-          {renderLabel(object, object.vertex, diagram)}
+          {renderAngle(object, diagram, selected, canvas)}
+          {renderLabel(object, object.vertex, diagram, canvas)}
         </g>
       );
     case "Label":
       return (
         <g key={object.id} {...shared}>
-          {renderLabel(object, object.position, diagram)}
+          {renderLabel(object, object.position, diagram, canvas)}
         </g>
       );
     case "FunctionPlot": {
       const points = object.samples.map((sample) => {
-        const svg = toSvg(sample, diagram);
+        const svg = toSvg(sample, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
       return (
         <g key={object.id} {...shared}>
           <polyline points={points.join(" ")} {...styleFor(object, selected)} />
-          {renderLabel(object, object.samples[object.samples.length - 2] ?? object.samples[0], diagram)}
+          {renderLabel(object, object.samples[object.samples.length - 2] ?? object.samples[0], diagram, canvas)}
         </g>
       );
     }
   }
 }
 
-function renderObjectHitArea(object: DiagramObject, diagram: DiagramModel): React.ReactNode {
+function renderObjectHitArea(
+  object: DiagramObject,
+  diagram: DiagramModel,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
   if (!object.visibility) return null;
 
   const shared = {
@@ -650,13 +785,13 @@ function renderObjectHitArea(object: DiagramObject, diagram: DiagramModel): Reac
 
   switch (object.type) {
     case "Point": {
-      const point = toSvg(object.coordinates, diagram);
+      const point = toSvg(object.coordinates, diagram, canvas);
       return <circle key={`${object.id}-hit`} cx={point.x} cy={point.y} r="14" {...shared} />;
     }
     case "Segment":
     case "Vector": {
-      const start = toSvg(object.start, diagram);
-      const end = toSvg(object.end, diagram);
+      const start = toSvg(object.start, diagram, canvas);
+      const end = toSvg(object.end, diagram, canvas);
       return (
         <line
           key={`${object.id}-hit`}
@@ -671,8 +806,8 @@ function renderObjectHitArea(object: DiagramObject, diagram: DiagramModel): Reac
       );
     }
     case "Line": {
-      const start = toSvg(object.through[0], diagram);
-      const end = toSvg(object.through[1], diagram);
+      const start = toSvg(object.through[0], diagram, canvas);
+      const end = toSvg(object.through[1], diagram, canvas);
       return (
         <line
           key={`${object.id}-hit`}
@@ -687,21 +822,21 @@ function renderObjectHitArea(object: DiagramObject, diagram: DiagramModel): Reac
       );
     }
     case "Circle": {
-      const center = toSvg(object.center, diagram);
-      const radius = (object.radius / (diagram.viewport.maxX - diagram.viewport.minX)) * width;
+      const center = toSvg(object.center, diagram, canvas);
+      const radius = (object.radius / (diagram.viewport.maxX - diagram.viewport.minX)) * canvas.width;
       return <circle key={`${object.id}-hit`} cx={center.x} cy={center.y} r={Math.max(radius, 8)} pointerEvents="all" {...shared} />;
     }
     case "Polygon": {
       const points = object.points.map((point) => {
-        const svg = toSvg(point, diagram);
+        const svg = toSvg(point, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
       return <polygon key={`${object.id}-hit`} points={points.join(" ")} pointerEvents="all" {...shared} />;
     }
     case "Angle": {
       const bounds = objectBounds(object);
-      const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram);
-      const bottomRight = toSvg({ x: bounds.maxX, y: bounds.minY }, diagram);
+      const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram, canvas);
+      const bottomRight = toSvg({ x: bounds.maxX, y: bounds.minY }, diagram, canvas);
       return (
         <rect
           key={`${object.id}-hit`}
@@ -715,8 +850,8 @@ function renderObjectHitArea(object: DiagramObject, diagram: DiagramModel): Reac
     }
     case "Label": {
       const bounds = objectBounds(object);
-      const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram);
-      const bottomRight = toSvg({ x: bounds.maxX, y: bounds.minY }, diagram);
+      const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram, canvas);
+      const bottomRight = toSvg({ x: bounds.maxX, y: bounds.minY }, diagram, canvas);
       return (
         <rect
           key={`${object.id}-hit`}
@@ -730,7 +865,7 @@ function renderObjectHitArea(object: DiagramObject, diagram: DiagramModel): Reac
     }
     case "FunctionPlot": {
       const points = object.samples.map((sample) => {
-        const svg = toSvg(sample, diagram);
+        const svg = toSvg(sample, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
       return <polyline key={`${object.id}-hit`} points={points.join(" ")} strokeWidth="18" strokeLinecap="round" {...shared} />;
@@ -746,15 +881,50 @@ export function DiagramCanvasFallback({
   coordinatesVisible = true,
   onSelectObjects,
   onCanvasPoint,
+  onCanvasDragCreate,
   onCommitDiagram,
   onViewportChange,
 }: DiagramCanvasFallbackProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>(defaultCanvasSize);
   const [spacePressed, setSpacePressed] = useState(false);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [dragDiagram, setDragDiagram] = useState<DiagramModel | null>(null);
-  const displayDiagram = dragDiagram ?? diagram;
+  const [cursorPosition, setCursorPosition] = useState<CursorPosition | null>(null);
+  const fittedViewport = useMemo(
+    () => fitViewportToCanvas(diagram.viewport, canvasSize),
+    [canvasSize, diagram.viewport],
+  );
+  const visibleDiagram = useMemo(
+    () => ({ ...diagram, viewport: fittedViewport }),
+    [diagram, fittedViewport],
+  );
+  const displayDiagram = dragDiagram ?? visibleDiagram;
   const selectedSet = useMemo(() => new Set(selectedObjectIds), [selectedObjectIds]);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg || typeof ResizeObserver === "undefined") return;
+
+    function syncSize(rect: DOMRectReadOnly | DOMRect) {
+      const next = {
+        width: Math.max(1, Math.round(rect.width)),
+        height: Math.max(1, Math.round(rect.height)),
+      };
+      setCanvasSize((current) =>
+        current.width === next.width && current.height === next.height ? current : next,
+      );
+    }
+
+    syncSize(svg.getBoundingClientRect());
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) syncSize(entry.contentRect);
+    });
+    observer.observe(svg);
+
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -779,13 +949,25 @@ export function DiagramCanvasFallback({
     if (!rect) return { x: 0, y: 0 };
 
     return {
-      x: ((event.clientX - rect.left) / rect.width) * width,
-      y: ((event.clientY - rect.top) / rect.height) * height,
+      x: ((event.clientX - rect.left) / rect.width) * canvasSize.width,
+      y: ((event.clientY - rect.top) / rect.height) * canvasSize.height,
     };
   }
 
   function capturePointer(event: PointerEvent<SVGSVGElement | SVGGElement | SVGElement>) {
     svgRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function updateCursorPosition(
+    event: PointerEvent<SVGSVGElement>,
+    sourceDiagram: DiagramModel = visibleDiagram,
+  ): PointCoordinate {
+    const svgPoint = svgPointFromEvent(event);
+    setCursorPosition({
+      svg: svgPoint,
+      point: fromSvg(svgPoint, sourceDiagram, canvasSize),
+    });
+    return svgPoint;
   }
 
   function beginObjectDrag(event: PointerEvent<SVGSVGElement>, objectId: string) {
@@ -802,8 +984,8 @@ export function DiagramCanvasFallback({
     setDragState({
       kind: "move",
       objectIds: nextIds.length > 0 ? nextIds : [objectId],
-      startDiagram: diagram,
-      startPoint: fromSvg(svgPointFromEvent(event), diagram),
+      startDiagram: visibleDiagram,
+      startPoint: fromSvg(svgPointFromEvent(event), visibleDiagram, canvasSize),
     });
   }
 
@@ -813,8 +995,27 @@ export function DiagramCanvasFallback({
       kind: "handle",
       objectId,
       handle,
-      startDiagram: diagram,
+      startDiagram: visibleDiagram,
     });
+  }
+
+  function previewCreatedObject(state: Extract<DragState, { kind: "create" }>): DiagramObject | null {
+    const start = fromSvg(state.startSvg, state.startDiagram, canvasSize);
+    const current = fromSvg(state.currentSvg, state.startDiagram, canvasSize);
+    const object = createObjectFromDrag(state.tool, start, current, state.startDiagram.objects, "");
+    if (!object) return null;
+
+    return {
+      ...object,
+      id: `${object.id}-preview`,
+      style: {
+        ...object.style,
+        stroke: "#111111",
+        fill: object.type === "Polygon" ? "#f3f3f3" : object.style.fill,
+        dashed: true,
+        opacity: 0.72,
+      },
+    } as DiagramObject;
   }
 
   function targetAttribute(event: PointerEvent<SVGSVGElement>, selector: string, attribute: string): string | null {
@@ -826,7 +1027,7 @@ export function DiagramCanvasFallback({
     if (event.button !== 0 && event.button !== 1) return;
 
     capturePointer(event);
-    const startSvg = svgPointFromEvent(event);
+    const startSvg = updateCursorPosition(event);
 
     const handleId = targetAttribute(event, "[data-handle-id]", "data-handle-id");
     const handleObjectId = targetAttribute(event, "[data-handle-object-id]", "data-handle-object-id");
@@ -839,14 +1040,8 @@ export function DiagramCanvasFallback({
       setDragState({
         kind: "pan",
         startClient: { x: event.clientX, y: event.clientY },
-        startViewport: diagram.viewport,
+        startViewport: visibleDiagram.viewport,
       });
-      return;
-    }
-
-    const objectId = targetAttribute(event, "[data-object-id]", "data-object-id");
-    if (event.button === 0 && objectId) {
-      beginObjectDrag(event, objectId);
       return;
     }
 
@@ -854,8 +1049,25 @@ export function DiagramCanvasFallback({
       setDragState({
         kind: "pan",
         startClient: { x: event.clientX, y: event.clientY },
-        startViewport: diagram.viewport,
+        startViewport: visibleDiagram.viewport,
       });
+      return;
+    }
+
+    if (event.button === 0 && isDragCreateTool(activeTool)) {
+      setDragState({
+        kind: "create",
+        tool: activeTool,
+        startSvg,
+        currentSvg: startSvg,
+        startDiagram: visibleDiagram,
+      });
+      return;
+    }
+
+    const objectId = targetAttribute(event, "[data-object-id]", "data-object-id");
+    if (event.button === 0 && activeTool === "select" && objectId) {
+      beginObjectDrag(event, objectId);
       return;
     }
 
@@ -867,17 +1079,18 @@ export function DiagramCanvasFallback({
       originalIds: selectedObjectIds,
       startSvg,
       currentSvg: startSvg,
-      startDiagram: diagram,
+      startDiagram: visibleDiagram,
     });
   }
 
   function handleCanvasPointerMove(event: PointerEvent<SVGSVGElement>) {
+    const sourceDiagram = dragState && dragState.kind !== "pan" ? dragState.startDiagram : visibleDiagram;
+    const svgPoint = updateCursorPosition(event, sourceDiagram);
     if (!dragState) return;
-    const svgPoint = svgPointFromEvent(event);
 
     if (dragState.kind === "pan") {
-      const dx = -((event.clientX - dragState.startClient.x) / width) * (dragState.startViewport.maxX - dragState.startViewport.minX);
-      const dy = ((event.clientY - dragState.startClient.y) / height) * (dragState.startViewport.maxY - dragState.startViewport.minY);
+      const dx = -((event.clientX - dragState.startClient.x) / canvasSize.width) * (dragState.startViewport.maxX - dragState.startViewport.minX);
+      const dy = ((event.clientY - dragState.startClient.y) / canvasSize.height) * (dragState.startViewport.maxY - dragState.startViewport.minY);
       onViewportChange?.({
         minX: dragState.startViewport.minX + dx,
         maxX: dragState.startViewport.maxX + dx,
@@ -892,8 +1105,13 @@ export function DiagramCanvasFallback({
       return;
     }
 
+    if (dragState.kind === "create") {
+      setDragState({ ...dragState, currentSvg: svgPoint });
+      return;
+    }
+
     if (dragState.kind === "move") {
-      const current = fromSvg(svgPoint, dragState.startDiagram);
+      const current = fromSvg(svgPoint, dragState.startDiagram, canvasSize);
       const dx = current.x - dragState.startPoint.x;
       const dy = current.y - dragState.startPoint.y;
       if (Math.abs(dx) < dragCommitThreshold && Math.abs(dy) < dragCommitThreshold) return;
@@ -908,7 +1126,7 @@ export function DiagramCanvasFallback({
       return;
     }
 
-    const current = fromSvg(svgPoint, dragState.startDiagram);
+    const current = fromSvg(svgPoint, dragState.startDiagram, canvasSize);
     setDragDiagram(
       diagramWithObjects(
         dragState.startDiagram,
@@ -920,9 +1138,12 @@ export function DiagramCanvasFallback({
   }
 
   function handleCanvasPointerUp(event: PointerEvent<SVGSVGElement>) {
+    const sourceDiagram = dragState && dragState.kind !== "pan" ? dragState.startDiagram : visibleDiagram;
+    updateCursorPosition(event, sourceDiagram);
+
     if (!dragState) {
       if (activeTool !== "select" && activeTool !== "hand" && event.button === 0) {
-        onCanvasPoint?.(fromSvg(svgPointFromEvent(event), diagram));
+        onCanvasPoint?.(fromSvg(svgPointFromEvent(event), visibleDiagram, canvasSize));
       }
       return;
     }
@@ -932,8 +1153,8 @@ export function DiagramCanvasFallback({
       if (distance < 4) {
         onSelectObjects?.(dragState.additive ? dragState.originalIds : []);
       } else {
-        const start = fromSvg(dragState.startSvg, dragState.startDiagram);
-        const end = fromSvg(dragState.currentSvg, dragState.startDiagram);
+        const start = fromSvg(dragState.startSvg, dragState.startDiagram, canvasSize);
+        const end = fromSvg(dragState.currentSvg, dragState.startDiagram, canvasSize);
         const bounds = normalizedBounds(start, end);
         const matches = dragState.startDiagram.objects
           .filter((object) => object.visibility && intersects(objectBounds(object), bounds))
@@ -944,7 +1165,22 @@ export function DiagramCanvasFallback({
       return;
     }
 
-    if (dragDiagram && changedEnough(dragState.kind === "pan" ? diagram : dragState.startDiagram, dragDiagram)) {
+    if (dragState.kind === "create") {
+      const distance = Math.hypot(dragState.currentSvg.x - dragState.startSvg.x, dragState.currentSvg.y - dragState.startSvg.y);
+      if (distance < 4) {
+        onCanvasPoint?.(fromSvg(dragState.startSvg, dragState.startDiagram, canvasSize));
+      } else {
+        onCanvasDragCreate?.(
+          fromSvg(dragState.startSvg, dragState.startDiagram, canvasSize),
+          fromSvg(dragState.currentSvg, dragState.startDiagram, canvasSize),
+        );
+      }
+      setDragDiagram(null);
+      setDragState(null);
+      return;
+    }
+
+    if (dragDiagram && changedEnough(dragState.kind === "pan" ? visibleDiagram : dragState.startDiagram, dragDiagram)) {
       onCommitDiagram?.(dragDiagram, "Object edited.");
     }
 
@@ -952,19 +1188,23 @@ export function DiagramCanvasFallback({
     setDragState(null);
   }
 
+  function handleCanvasPointerLeave() {
+    if (!dragState) setCursorPosition(null);
+  }
+
   function handleWheel(event: WheelEvent<SVGSVGElement>) {
     event.preventDefault();
-    const anchor = fromSvg(svgPointFromEvent(event), diagram);
+    const anchor = fromSvg(svgPointFromEvent(event), visibleDiagram, canvasSize);
     const factor = event.deltaY < 0 ? 0.88 : 1.14;
-    onViewportChange?.(zoomViewport(diagram.viewport, anchor, factor));
+    onViewportChange?.(zoomViewport(visibleDiagram.viewport, anchor, factor));
   }
 
   function zoomFromCenter(factor: number) {
     const center = {
-      x: (diagram.viewport.minX + diagram.viewport.maxX) / 2,
-      y: (diagram.viewport.minY + diagram.viewport.maxY) / 2,
+      x: (visibleDiagram.viewport.minX + visibleDiagram.viewport.maxX) / 2,
+      y: (visibleDiagram.viewport.minY + visibleDiagram.viewport.maxY) / 2,
     };
-    onViewportChange?.(zoomViewport(diagram.viewport, center, factor));
+    onViewportChange?.(zoomViewport(visibleDiagram.viewport, center, factor));
   }
 
   function resetViewport() {
@@ -972,6 +1212,7 @@ export function DiagramCanvasFallback({
   }
 
   const marquee = dragState?.kind === "marquee" ? dragState : null;
+  const previewObject = dragState?.kind === "create" ? previewCreatedObject(dragState) : null;
   const marqueeRect = marquee
     ? {
         x: Math.min(marquee.startSvg.x, marquee.currentSvg.x),
@@ -994,13 +1235,15 @@ export function DiagramCanvasFallback({
     <div className="relative h-full min-h-0">
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${width} ${height}`}
+        viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
+        preserveAspectRatio="xMidYMid meet"
         onPointerDown={handleCanvasPointerDown}
         onPointerMove={handleCanvasPointerMove}
         onPointerUp={handleCanvasPointerUp}
         onPointerCancel={handleCanvasPointerUp}
+        onPointerLeave={handleCanvasPointerLeave}
         onWheel={handleWheel}
-        className={`h-full w-full touch-none rounded-md border border-stone-200 bg-white shadow-sm ${cursorClass}`}
+        className={`h-full w-full touch-none bg-white ${cursorClass}`}
         role="img"
         aria-label={diagram.name}
       >
@@ -1009,24 +1252,25 @@ export function DiagramCanvasFallback({
             <path d="M0,0 L0,6 L9,3 z" fill="#111111" />
           </marker>
           <marker id="axis-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-            <path d="M0,0 L0,6 L8,3 z" fill="#78716c" />
+            <path d="M0,0 L0,6 L8,3 z" fill="#111111" />
           </marker>
         </defs>
-        <rect width={width} height={height} fill="#ffffff" />
-        <g stroke="#e7e5e4" strokeWidth="1">
-          {gridLines(displayDiagram)}
+        <rect width={canvasSize.width} height={canvasSize.height} fill="#ffffff" />
+        <g>
+          {gridLines(displayDiagram, canvasSize)}
         </g>
-        {axisLines(displayDiagram, coordinatesVisible)}
-        {coordinateLabels(displayDiagram, coordinatesVisible)}
-        {displayDiagram.objects.map((object) => renderObject(object, displayDiagram, selectedSet.has(object.id)))}
-        {displayDiagram.objects.map((object) => renderObjectHitArea(object, displayDiagram))}
+        {axisLines(displayDiagram, coordinatesVisible, canvasSize)}
+        {coordinateLabels(displayDiagram, coordinatesVisible, canvasSize)}
+        {displayDiagram.objects.map((object) => renderObject(object, displayDiagram, selectedSet.has(object.id), canvasSize))}
+        {previewObject ? renderObject(previewObject, displayDiagram, true, canvasSize) : null}
+        {displayDiagram.objects.map((object) => renderObjectHitArea(object, displayDiagram, canvasSize))}
         {displayDiagram.objects.map((object) =>
-          selectedSet.has(object.id) ? renderSelectionFrame(object, displayDiagram) : null,
+          selectedSet.has(object.id) ? renderSelectionFrame(object, displayDiagram, canvasSize) : null,
         )}
         {displayDiagram.objects.map((object) =>
           selectedSet.has(object.id)
             ? handlesForObject(object).map((handle) => {
-                const point = toSvg(handle.point, displayDiagram);
+                const point = toSvg(handle.point, displayDiagram, canvasSize);
                 return (
                   <circle
                     key={`${object.id}-${handle.id}`}
@@ -1034,7 +1278,7 @@ export function DiagramCanvasFallback({
                     cy={point.y}
                     r="6"
                     fill="#ffffff"
-                    stroke="#2563eb"
+                    stroke="#111111"
                     strokeWidth="2"
                     data-handle-id={handle.id}
                     data-handle-object-id={object.id}
@@ -1045,11 +1289,11 @@ export function DiagramCanvasFallback({
             : null,
         )}
         {pendingPoints.map((point, index) => {
-          const svgPoint = toSvg(point, displayDiagram);
+          const svgPoint = toSvg(point, displayDiagram, canvasSize);
           return (
             <g key={`${point.x}-${point.y}-${index}`}>
-              <circle cx={svgPoint.x} cy={svgPoint.y} r="8" fill="#2563eb" opacity="0.16" />
-              <circle cx={svgPoint.x} cy={svgPoint.y} r="4" fill="#2563eb" />
+              <circle cx={svgPoint.x} cy={svgPoint.y} r="8" fill="#111111" opacity="0.1" />
+              <circle cx={svgPoint.x} cy={svgPoint.y} r="4" fill="#111111" />
             </g>
           );
         })}
@@ -1059,16 +1303,17 @@ export function DiagramCanvasFallback({
             y={marqueeRect.y}
             width={marqueeRect.width}
             height={marqueeRect.height}
-            fill="#2563eb"
-            fillOpacity="0.08"
-            stroke="#2563eb"
+            fill="#111111"
+            fillOpacity="0.05"
+            stroke="#111111"
             strokeDasharray="6 5"
             strokeWidth="1.5"
           />
         ) : null}
+        {coordinatesVisible ? renderCursorReadout(cursorPosition, canvasSize) : null}
       </svg>
 
-      <div className="absolute bottom-3 right-3 flex gap-1 rounded-md border border-stone-200 bg-white/95 p-1 shadow-sm">
+      <div className="absolute bottom-2 right-2 flex gap-1 border-2 border-black bg-white p-1">
         <button type="button" onClick={() => zoomFromCenter(0.82)} title="Zoom in" aria-label="Zoom in" className="mini-icon-button">
           <ZoomIn className="h-4 w-4" aria-hidden />
         </button>
@@ -1079,13 +1324,6 @@ export function DiagramCanvasFallback({
           <Maximize2 className="h-4 w-4" aria-hidden />
         </button>
       </div>
-
-      {activeTool !== "select" && pendingPoints.length > 0 ? (
-        <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-blue-100 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">
-          <Crosshair className="mr-1 inline h-3.5 w-3.5" aria-hidden />
-          {pendingPoints.length}
-        </div>
-      ) : null}
     </div>
   );
 }

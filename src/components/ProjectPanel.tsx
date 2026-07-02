@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FolderPlus, RefreshCw, Save, UploadCloud } from "lucide-react";
+import { FolderPlus, RefreshCw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { DiagramModel } from "@/lib/diagram-types";
 import type { LintResult } from "@/lib/linter";
 import { createDiagram, getDiagram, getDiagrams, updateDiagram, type DiagramRow } from "@/lib/db/diagrams";
-import { createProject, getProjects, type Project } from "@/lib/db/projects";
+import { createProject, deleteProject, getProjects, type Project } from "@/lib/db/projects";
 
 interface ProjectPanelProps {
   cloudEnabled: boolean;
@@ -200,6 +200,31 @@ export function ProjectPanel({
     onMessage("Diagram loaded.");
   }
 
+  async function handleDeleteProject() {
+    if (!selectedProjectId) {
+      onMessage("Select a project to delete.");
+      return;
+    }
+
+    const projectName = projects.find((project) => project.id === selectedProjectId)?.name ?? "this project";
+    if (!window.confirm(`Delete ${projectName}? Diagrams inside it will also be removed.`)) return;
+
+    setBusy(true);
+    const result = await deleteProject(selectedProjectId);
+    setBusy(false);
+    if (result.error) {
+      onMessage(result.error);
+      return;
+    }
+
+    const remaining = projects.filter((project) => project.id !== selectedProjectId);
+    setProjects(remaining);
+    setSelectedProjectId(remaining[0]?.id ?? "");
+    setDiagrams([]);
+    setSelectedDiagramId("");
+    onMessage("Project deleted.");
+  }
+
   return (
     <section className="tool-panel">
       <div className="panel-heading">
@@ -279,6 +304,15 @@ export function ProjectPanel({
           className="icon-only disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RefreshCw className="h-4 w-4" aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleDeleteProject()}
+          disabled={busy || !cloudEnabled || !selectedProjectId}
+          title="Delete Project"
+          className="icon-only danger-button disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Trash2 className="h-4 w-4" aria-hidden />
         </button>
       </div>
     </section>

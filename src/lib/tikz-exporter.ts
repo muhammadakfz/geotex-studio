@@ -16,6 +16,10 @@ export interface TikzExport {
   usesPgfplots: boolean;
 }
 
+export interface TikzExportOptions {
+  includeCartesian?: boolean;
+}
+
 function sanitizeName(name: string): string {
   const fallback = name || "coord";
   return fallback.replace(/[^a-zA-Z0-9_]/g, "").replace(/^([0-9])/, "P$1") || "coord";
@@ -213,13 +217,29 @@ function exportObject(object: DiagramObject, points: Map<string, PointObject>, c
   }
 }
 
-export function exportTikz(diagram: DiagramModel): TikzExport {
+function exportCartesian(diagram: DiagramModel): string[] {
+  const { minX, maxX, minY, maxY } = diagram.viewport;
+  const xStep = Math.max(1, Math.round((maxX - minX) / 10));
+  const yStep = Math.max(1, Math.round((maxY - minY) / 8));
+
+  return [
+    "  % Optional cartesian guide",
+    `  \\draw[help lines, step=${formatNumber(Math.min(xStep, yStep))}, gray!18] (${formatNumber(minX)},${formatNumber(minY)}) grid (${formatNumber(maxX)},${formatNumber(maxY)});`,
+    `  \\draw[axis] (${formatNumber(minX)},0) -- (${formatNumber(maxX)},0);`,
+    `  \\draw[axis] (0,${formatNumber(minY)}) -- (0,${formatNumber(maxY)});`,
+  ];
+}
+
+export function exportTikz(diagram: DiagramModel, options: TikzExportOptions = {}): TikzExport {
   const points = pointMap(diagram);
   const colors = collectColorDefinitions(diagram);
   const colorDefinitions = [...colors.entries()].map(
     ([hex, name]) => `\\definecolor{${name}}{HTML}{${hex}}`,
   );
-  const body = diagram.objects.flatMap((object) => exportObject(object, points, colors));
+  const body = [
+    ...(options.includeCartesian ? exportCartesian(diagram) : []),
+    ...diagram.objects.flatMap((object) => exportObject(object, points, colors)),
+  ];
 
   const code = [
     "% Required packages:",

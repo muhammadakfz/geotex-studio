@@ -87,8 +87,8 @@ export function objectGeometry(object: DiagramObject): ObjectGeometry {
 
   const bounds = objectBounds(object);
   return {
-    x: round(bounds.minX),
-    y: round(bounds.minY),
+    x: round((bounds.minX + bounds.maxX) / 2),
+    y: round((bounds.minY + bounds.maxY) / 2),
     w: round(bounds.maxX - bounds.minX),
     h: round(bounds.maxY - bounds.minY),
   };
@@ -145,6 +145,22 @@ export function translateObject(object: DiagramObject, dx: number, dy: number): 
         samples: object.samples.map((point) => translatePoint(point, dx, dy)),
       };
   }
+}
+
+export function insertPolygonVertex(
+  object: Extract<DiagramObject, { type: "Polygon" }>,
+  edgeIndex: number,
+  point: PointCoordinate,
+): Extract<DiagramObject, { type: "Polygon" }> {
+  const index = Math.max(0, Math.min(edgeIndex, object.points.length - 1));
+  return {
+    ...object,
+    points: [
+      ...object.points.slice(0, index + 1),
+      { x: round(point.x), y: round(point.y) },
+      ...object.points.slice(index + 1),
+    ],
+  };
 }
 
 export function resizeObjectToBounds(object: DiagramObject, rawBounds: ObjectBounds): DiagramObject {
@@ -285,10 +301,15 @@ export function applyObjectGeometryPatch(object: DiagramObject, patch: ObjectGeo
   }
 
   const current = objectGeometry(object);
+  const centerX = patch.x ?? current.x;
+  const centerY = patch.y ?? current.y;
+  const width = Math.max(minSize, patch.w ?? current.w);
+  const height = Math.max(minSize, patch.h ?? current.h);
+
   return resizeObjectToBounds(object, {
-    minX: patch.x ?? current.x,
-    minY: patch.y ?? current.y,
-    maxX: (patch.x ?? current.x) + Math.max(minSize, patch.w ?? current.w),
-    maxY: (patch.y ?? current.y) + Math.max(minSize, patch.h ?? current.h),
+    minX: centerX - width / 2,
+    minY: centerY - height / 2,
+    maxX: centerX + width / 2,
+    maxY: centerY + height / 2,
   });
 }

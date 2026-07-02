@@ -61,4 +61,11 @@ describe("tikz exporter", () => {
     expect(exportResult.code).toContain("(0,0) -- (2,0) -- (2,1) -- (0,1) -- cycle;");
     expect(exportResult.code).toContain("(3,0) -- (4,0) -- (3.5,1) -- cycle;");
   });
+
+  it("keeps cartesian guides out of exports unless requested", () => {
+    const diagram = geometryFixture();
+
+    expect(exportTikz(diagram).code).not.toContain("Optional cartesian guide");
+    expect(exportTikz(diagram, { includeCartesian: true }).code).toContain("Optional cartesian guide");
+  });
 });

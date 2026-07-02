@@ -15,6 +15,7 @@ interface GeoGebraCanvasProps {
   useGeoGebraBridge?: boolean;
   onSelectObjects?: (ids: string[]) => void;
   onCanvasPoint?: (point: PointCoordinate) => void;
+  onCanvasDragCreate?: (start: PointCoordinate, end: PointCoordinate) => void;
   onCommitDiagram?: (diagram: DiagramModel, message?: string) => void;
   onViewportChange?: (viewport: DiagramViewport) => void;
 }
@@ -43,6 +44,7 @@ export function GeoGebraCanvas({
   useGeoGebraBridge = false,
   onSelectObjects,
   onCanvasPoint,
+  onCanvasDragCreate,
   onCommitDiagram,
   onViewportChange,
 }: GeoGebraCanvasProps) {
@@ -111,6 +113,7 @@ export function GeoGebraCanvas({
           coordinatesVisible={coordinatesVisible}
           onSelectObjects={onSelectObjects}
           onCanvasPoint={onCanvasPoint}
+          onCanvasDragCreate={onCanvasDragCreate}
           onCommitDiagram={onCommitDiagram}
           onViewportChange={onViewportChange}
         />

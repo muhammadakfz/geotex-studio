@@ -5,35 +5,27 @@ import {
   Clipboard,
   Download,
   FilePlus2,
-  ListChecks,
   Redo2,
   Undo2,
-  Wand2,
 } from "lucide-react";
 import { AccessGate } from "@/components/AccessGate";
-import { CompatibilityPanel } from "@/components/CompatibilityPanel";
-import { DiagramLinterPanel } from "@/components/DiagramLinterPanel";
-import { ExportHistoryPanel } from "@/components/ExportHistoryPanel";
 import { FigureBuilderPanel } from "@/components/FigureBuilderPanel";
 import { GeoGebraCanvas } from "@/components/GeoGebraCanvas";
-import { ObjectList } from "@/components/ObjectList";
+import { LayerPanel } from "@/components/LayerPanel";
 import { type ObjectPatch, PropertiesPanel } from "@/components/PropertiesPanel";
 import { ProjectPanel } from "@/components/ProjectPanel";
-import { StylePresetPanel } from "@/components/StylePresetPanel";
 import { TikZOutputPanel } from "@/components/TikZOutputPanel";
 import { UserMenu } from "@/components/UserMenu";
-import { VersionHistoryPanel } from "@/components/VersionHistoryPanel";
-import { applySafeFixes, beautifyDiagram } from "@/lib/beautify";
 import {
   createBlankDiagram,
+  createObjectFromDrag,
   createObjectFromTool,
   snapPoint,
   type EditorTool,
 } from "@/lib/diagram-editor";
 import type { DiagramModel, DiagramObject, DiagramViewport, PointCoordinate } from "@/lib/diagram-types";
-import { applyObjectGeometryPatch } from "@/lib/diagram-geometry";
+import { applyObjectGeometryPatch, insertPolygonVertex } from "@/lib/diagram-geometry";
 import { saveExport } from "@/lib/db/export-history";
-import { saveLintRun } from "@/lib/db/lint-runs";
 import { lintDiagram, type LintResult } from "@/lib/linter";
 import { isSupabaseConfigured } from "@/lib/supabase/client";
 import { exportTikz } from "@/lib/tikz-exporter";
@@ -67,24 +59,117 @@ function updateDiagramObject(diagram: DiagramModel, objectId: string, patch: Obj
   };
 }
 
+function pointDistance(a: PointCoordinate, b: PointCoordinate): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function closestPointOnSegment(point: PointCoordinate, start: PointCoordinate, end: PointCoordinate): PointCoordinate {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return start;
+
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+  return {
+    x: Number((start.x + t * dx).toFixed(3)),
+    y: Number((start.y + t * dy).toFixed(3)),
+  };
+}
+
+function closestPointOnLine(point: PointCoordinate, start: PointCoordinate, end: PointCoordinate): PointCoordinate {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return start;
+
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+  return {
+    x: Number((start.x + t * dx).toFixed(3)),
+    y: Number((start.y + t * dy).toFixed(3)),
+  };
+}
+
+function closestPointOnCircle(point: PointCoordinate, center: PointCoordinate, radius: number): PointCoordinate {
+  const angle = Math.atan2(point.y - center.y, point.x - center.x);
+  return {
+    x: Number((center.x + Math.cos(angle) * radius).toFixed(3)),
+    y: Number((center.y + Math.sin(angle) * radius).toFixed(3)),
+  };
+}
+
+interface ObjectSnapTarget {
+  point: PointCoordinate;
+  distance: number;
+  objectId?: string;
+  kind?: "point" | "segment" | "line" | "circle" | "polygon-edge";
+  edgeIndex?: number;
+}
+
+function findObjectSnapTarget(point: PointCoordinate, diagram: DiagramModel): ObjectSnapTarget {
+  const rangeX = diagram.viewport.maxX - diagram.viewport.minX;
+  const rangeY = diagram.viewport.maxY - diagram.viewport.minY;
+  const tolerance = Math.max(Math.max(rangeX, rangeY) / 55, 0.045);
+  let nearest: ObjectSnapTarget = { point, distance: tolerance };
+
+  function consider(candidate: PointCoordinate, target?: Omit<ObjectSnapTarget, "point" | "distance">) {
+    const distance = pointDistance(point, candidate);
+    if (distance <= nearest.distance) {
+      nearest = { point: candidate, distance, ...target };
+    }
+  }
+
+  diagram.objects.forEach((object) => {
+    if (!object.visibility) return;
+
+    if (object.type === "Point") {
+      consider(object.coordinates, { objectId: object.id, kind: "point" });
+    } else if (object.type === "Segment" || object.type === "Vector") {
+      consider(closestPointOnSegment(point, object.start, object.end), { objectId: object.id, kind: "segment" });
+    } else if (object.type === "Line") {
+      consider(closestPointOnLine(point, object.through[0], object.through[1]), { objectId: object.id, kind: "line" });
+    } else if (object.type === "Circle") {
+      consider(closestPointOnCircle(point, object.center, object.radius), { objectId: object.id, kind: "circle" });
+    } else if (object.type === "Polygon") {
+      object.points.forEach((start, index) => {
+        consider(
+          closestPointOnSegment(point, start, object.points[(index + 1) % object.points.length]),
+          { objectId: object.id, kind: "polygon-edge", edgeIndex: index },
+        );
+      });
+    }
+  });
+
+  return nearest;
+}
+
+function snapToDiagramObject(point: PointCoordinate, diagram: DiagramModel): PointCoordinate {
+  return findObjectSnapTarget(point, diagram).point;
+}
+
+function isObjectSnapTool(tool: EditorTool): boolean {
+  return ["point", "angle", "segment", "vector", "triangle", "circle"].includes(tool);
+}
+
 export default function Home() {
   const initialDiagram = useMemo(() => createBlankDiagram(), []);
   const [diagram, setDiagram] = useState<DiagramModel>(initialDiagram);
   const diagramRef = useRef<DiagramModel>(initialDiagram);
   const [undoStack, setUndoStack] = useState<DiagramModel[]>([]);
   const [redoStack, setRedoStack] = useState<DiagramModel[]>([]);
-  const [activePresetId, setActivePresetId] = useState(initialDiagram.metadata?.preset ?? "thesis-paper");
   const [selectedObjectIds, setSelectedObjectIds] = useState<string[]>([]);
   const [savedDiagramId, setSavedDiagramId] = useState<string | null>(null);
   const [lintResult, setLintResult] = useState<LintResult>(() => lintDiagram(initialDiagram));
-  const [statusMessage, setStatusMessage] = useState("Ready.");
-  const [exportRefreshToken, setExportRefreshToken] = useState(0);
+  const [, setStatusMessage] = useState("Ready.");
   const [activeTool, setActiveTool] = useState<EditorTool>("select");
   const [pendingPoints, setPendingPoints] = useState<PointCoordinate[]>([]);
-  const [labelInput, setLabelInput] = useState("");
   const [snapToGrid, setSnapToGrid] = useState(true);
+  const [includeCartesianExport, setIncludeCartesianExport] = useState(false);
   const cloudEnabled = isSupabaseConfigured();
-  const tikz = useMemo(() => exportTikz(diagram), [diagram]);
+  const activePresetId = "manual";
+  const tikz = useMemo(
+    () => exportTikz(diagram, { includeCartesian: includeCartesianExport }),
+    [diagram, includeCartesianExport],
+  );
   const selectedObject = useMemo(
     () => diagram.objects.find((object) => object.id === selectedObjectIds[0]),
     [diagram.objects, selectedObjectIds],
@@ -141,7 +226,6 @@ export default function Home() {
   function newBlankFigure() {
     const next = createBlankDiagram();
     commitDiagram(next, "New figure.");
-    setActivePresetId(next.metadata?.preset ?? "thesis-paper");
     setSelectedObjectIds([]);
     setSavedDiagramId(null);
     setActiveTool("select");
@@ -154,9 +238,42 @@ export default function Home() {
     setStatusMessage("Ready.");
   }
 
+  function snapCreationPoint(point: PointCoordinate): PointCoordinate {
+    if (isObjectSnapTool(activeTool)) {
+      const objectPoint = snapToDiagramObject(point, diagramRef.current);
+      if (pointDistance(point, objectPoint) > 0.0001) return objectPoint;
+    }
+
+    return snapPoint(point, snapToGrid);
+  }
+
   function handleCanvasPoint(point: PointCoordinate) {
-    const snapped = snapPoint(point, snapToGrid);
-    const result = createObjectFromTool(activeTool, snapped, pendingPoints, diagram.objects, labelInput);
+    if (activeTool === "point" && pendingPoints.length === 0) {
+      const currentDiagram = diagramRef.current;
+      const target = findObjectSnapTarget(point, currentDiagram);
+
+      if (target.kind === "polygon-edge" && target.objectId && target.edgeIndex !== undefined) {
+        const pinnedPoint = snapPoint(target.point, false);
+        const edgeIndex = target.edgeIndex;
+        const nextObjects = currentDiagram.objects.map((object) => {
+          if (object.id !== target.objectId || object.type !== "Polygon") return object;
+
+          return insertPolygonVertex(object, edgeIndex, pinnedPoint);
+        });
+        const next: DiagramModel = {
+          ...currentDiagram,
+          objects: nextObjects,
+          metadata: { ...currentDiagram.metadata, updatedAt: new Date().toISOString() },
+        };
+        commitDiagram(next, "Vertex pinned to object.");
+        setSelectedObjectIds([target.objectId]);
+        setPendingPoints([]);
+        return;
+      }
+    }
+
+    const snapped = snapCreationPoint(point);
+    const result = createObjectFromTool(activeTool, snapped, pendingPoints, diagram.objects, "");
 
     setPendingPoints(result.pendingPoints);
     if (!result.object) {
@@ -171,6 +288,24 @@ export default function Home() {
     };
     commitDiagram(next, `${result.object.type} created.`);
     setSelectedObjectIds([result.object.id]);
+  }
+
+  function handleCanvasDragCreate(start: PointCoordinate, end: PointCoordinate) {
+    const currentDiagram = diagramRef.current;
+    const snappedStart = snapCreationPoint(start);
+    const snappedEnd = snapCreationPoint(end);
+    const object = createObjectFromDrag(activeTool, snappedStart, snappedEnd, currentDiagram.objects, "");
+
+    if (!object) return;
+
+    const next: DiagramModel = {
+      ...currentDiagram,
+      objects: [...currentDiagram.objects, object],
+      metadata: { ...currentDiagram.metadata, updatedAt: new Date().toISOString() },
+    };
+    commitDiagram(next, `${object.type} created.`);
+    setPendingPoints([]);
+    setSelectedObjectIds([object.id]);
   }
 
   function handleGridChange(value: boolean) {
@@ -215,6 +350,44 @@ export default function Home() {
     setSelectedObjectIds([]);
   }
 
+  function handleLayerAction(action: "front" | "up" | "down" | "back") {
+    if (selectedObjectIds.length === 0) return;
+
+    const selected = new Set(selectedObjectIds);
+    const objects = [...diagram.objects];
+    let nextObjects: DiagramObject[];
+
+    if (action === "front") {
+      nextObjects = [...objects.filter((object) => !selected.has(object.id)), ...objects.filter((object) => selected.has(object.id))];
+    } else if (action === "back") {
+      nextObjects = [...objects.filter((object) => selected.has(object.id)), ...objects.filter((object) => !selected.has(object.id))];
+    } else {
+      nextObjects = [...objects];
+      if (action === "up") {
+        for (let index = nextObjects.length - 2; index >= 0; index -= 1) {
+          if (selected.has(nextObjects[index].id) && !selected.has(nextObjects[index + 1].id)) {
+            [nextObjects[index], nextObjects[index + 1]] = [nextObjects[index + 1], nextObjects[index]];
+          }
+        }
+      } else {
+        for (let index = 1; index < nextObjects.length; index += 1) {
+          if (selected.has(nextObjects[index].id) && !selected.has(nextObjects[index - 1].id)) {
+            [nextObjects[index - 1], nextObjects[index]] = [nextObjects[index], nextObjects[index - 1]];
+          }
+        }
+      }
+    }
+
+    commitDiagram(
+      {
+        ...diagram,
+        objects: nextObjects,
+        metadata: { ...diagram.metadata, updatedAt: new Date().toISOString() },
+      },
+      "Layer updated.",
+    );
+  }
+
   function handleCanvasCommit(next: DiagramModel, message?: string) {
     commitDiagram(next, message, diagram);
   }
@@ -231,36 +404,9 @@ export default function Home() {
     });
   }
 
-  function handlePresetChange(presetId: string) {
-    setActivePresetId(presetId);
-    commitDiagram(beautifyDiagram(diagram, presetId), "Preset applied.");
-  }
-
-  function handleBeautify() {
-    commitDiagram(beautifyDiagram(diagram, activePresetId), "Beautified for TeX.");
-  }
-
-  async function handleRunLinter() {
-    const result = lintDiagram(diagram);
-    setLintResult(result);
-    if (cloudEnabled && savedDiagramId) {
-      const saved = await saveLintRun(savedDiagramId, result.score, result.grade, result.findings);
-      setStatusMessage(saved.error ?? "Lint result saved.");
-      return;
-    }
-    setStatusMessage("Linter complete.");
-  }
-
-  function handleSafeFixes() {
-    commitDiagram(applySafeFixes(diagram, activePresetId), "Safe fixes applied.");
-  }
-
   async function recordExport(format: "tikz" | "tex") {
     if (!cloudEnabled || !savedDiagramId) return;
-    const result = await saveExport(savedDiagramId, format, tikz.code, tikz.requiredPackages);
-    if (!result.error) {
-      setExportRefreshToken((current) => current + 1);
-    }
+    await saveExport(savedDiagramId, format, tikz.code, tikz.requiredPackages);
   }
 
   async function handleCopyTikz() {
@@ -281,9 +427,8 @@ export default function Home() {
     setStatusMessage(".tex downloaded.");
   }
 
-  function handleLoadDiagram(next: DiagramModel, diagramId: string, presetId?: string | null) {
+  function handleLoadDiagram(next: DiagramModel, diagramId: string) {
     replaceDiagram(next, "Diagram loaded.");
-    setActivePresetId(presetId ?? next.metadata?.preset ?? "thesis-paper");
     setSavedDiagramId(diagramId);
   }
 
@@ -311,6 +456,15 @@ export default function Home() {
 
       if (isEditingTarget(event.target)) return;
 
+      if (command && key === "a") {
+        event.preventDefault();
+        setSelectedObjectIds(diagramRef.current.objects.map((object) => object.id));
+        setActiveTool("select");
+        setPendingPoints([]);
+        setStatusMessage("All objects selected.");
+        return;
+      }
+
       if (key === "escape") {
         event.preventDefault();
         setActiveTool("select");
@@ -332,6 +486,7 @@ export default function Home() {
       if (key === "c") handleToolChange("circle");
       if (key === "r") handleToolChange("rectangle");
       if (key === "t") handleToolChange("triangle");
+      if (key === "q") handleToolChange("angle");
       if (key === "a") handleToolChange("vector");
       if (key === "l") handleToolChange("label");
       if (key === "g") handleGridChange(!diagram.gridVisible);
@@ -345,7 +500,7 @@ export default function Home() {
   return (
     <AccessGate>
       {(session) => (
-        <div className="flex h-dvh flex-col overflow-hidden bg-stone-100 text-stone-950">
+        <div className="flex h-dvh flex-col overflow-hidden bg-white text-black">
           <header className="studio-header">
             <div className="studio-brand">
               <h1 className="studio-title">GeoTeX Studio</h1>
@@ -375,14 +530,6 @@ export default function Home() {
               >
                 <Redo2 className="h-4 w-4" aria-hidden />
               </button>
-              <button type="button" onClick={handleBeautify} title="Beautify for TeX" className="icon-button shrink-0">
-                <Wand2 className="h-4 w-4" aria-hidden />
-                Beautify
-              </button>
-              <button type="button" onClick={() => void handleRunLinter()} title="Run Diagram Linter" className="icon-button-secondary shrink-0">
-                <ListChecks className="h-4 w-4" aria-hidden />
-                Lint
-              </button>
               <button type="button" onClick={() => void handleCopyTikz()} title="Copy TikZ" className="icon-only shrink-0">
                 <Clipboard className="h-4 w-4" aria-hidden />
               </button>
@@ -397,14 +544,12 @@ export default function Home() {
             <aside className="studio-tools">
               <FigureBuilderPanel
                 activeTool={activeTool}
-                labelInput={labelInput}
                 snapToGrid={snapToGrid}
                 gridVisible={diagram.gridVisible}
                 coordinatesVisible={diagram.coordinatesVisible ?? true}
                 hasSelection={selectedObjectIds.length > 0}
                 pendingCount={pendingPoints.length}
                 onToolChange={handleToolChange}
-                onLabelChange={setLabelInput}
                 onSnapChange={setSnapToGrid}
                 onGridChange={handleGridChange}
                 onCoordinatesChange={handleCoordinatesChange}
@@ -412,27 +557,7 @@ export default function Home() {
               />
             </aside>
 
-            <aside className="studio-left-panel">
-              <div className="space-y-3">
-                <ObjectList
-                  diagram={diagram}
-                  selectedObjectIds={selectedObjectIds}
-                  onSelectObjects={setSelectedObjectIds}
-                />
-              </div>
-            </aside>
-
             <section className="studio-canvas-panel">
-              <div className="studio-canvas-bar">
-                <div className="min-w-0">
-                  <h2 className="truncate text-lg font-semibold tracking-normal">{diagram.name}</h2>
-                  <p className="truncate text-xs text-stone-500">{statusMessage}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="status-pill">{diagram.objects.length} objects</span>
-                  <span className="status-pill">Score {lintResult.score}</span>
-                </div>
-              </div>
               <div className="studio-canvas-frame">
                 <GeoGebraCanvas
                   diagram={diagram}
@@ -442,6 +567,7 @@ export default function Home() {
                   coordinatesVisible={diagram.coordinatesVisible ?? true}
                   onSelectObjects={setSelectedObjectIds}
                   onCanvasPoint={handleCanvasPoint}
+                  onCanvasDragCreate={handleCanvasDragCreate}
                   onCommitDiagram={handleCanvasCommit}
                   onViewportChange={handleViewportChange}
                 />
@@ -451,6 +577,12 @@ export default function Home() {
             <aside className="studio-inspector">
               <div className="space-y-3">
                 <PropertiesPanel object={selectedObject} onChange={updateSelectedObject} />
+                <LayerPanel
+                  diagram={diagram}
+                  selectedObjectIds={selectedObjectIds}
+                  onSelectObjects={setSelectedObjectIds}
+                  onLayerAction={handleLayerAction}
+                />
                 {cloudEnabled ? (
                   <ProjectPanel
                     cloudEnabled={cloudEnabled}
@@ -464,42 +596,14 @@ export default function Home() {
                     onMessage={setStatusMessage}
                   />
                 ) : null}
-                <StylePresetPanel
-                  activePresetId={activePresetId}
-                  cloudEnabled={cloudEnabled}
-                  onChange={handlePresetChange}
-                  onMessage={setStatusMessage}
-                />
-                <DiagramLinterPanel
-                  result={lintResult}
-                  onRun={() => void handleRunLinter()}
-                  onApplyFixes={handleSafeFixes}
-                />
                 <TikZOutputPanel
                   diagram={diagram}
                   code={tikz.code}
+                  includeCartesian={includeCartesianExport}
+                  onIncludeCartesianChange={setIncludeCartesianExport}
                   onCopy={() => void handleCopyTikz()}
                   onDownload={() => void handleDownloadTex()}
                 />
-                <CompatibilityPanel diagram={diagram} lintResult={lintResult} />
-                {cloudEnabled ? (
-                  <>
-                    <VersionHistoryPanel
-                      cloudEnabled={cloudEnabled}
-                      diagramId={savedDiagramId}
-                      diagram={diagram}
-                      tikzCode={tikz.code}
-                      lintResult={lintResult}
-                      onMessage={setStatusMessage}
-                    />
-                    <ExportHistoryPanel
-                      cloudEnabled={cloudEnabled}
-                      diagramId={savedDiagramId}
-                      refreshToken={exportRefreshToken}
-                      onMessage={setStatusMessage}
-                    />
-                  </>
-                ) : null}
               </div>
             </aside>
           </main>

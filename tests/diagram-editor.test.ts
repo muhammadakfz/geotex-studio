@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBlankDiagram, createObjectFromTool, snapPoint } from "@/lib/diagram-editor";
+import { createBlankDiagram, createObjectFromDrag, createObjectFromTool, snapPoint } from "@/lib/diagram-editor";
 
 describe("diagram editor helpers", () => {
   it("creates a blank editable figure with a visible grid", () => {
@@ -50,6 +50,49 @@ describe("diagram editor helpers", () => {
         { x: 1, y: 0 },
         { x: 0.5, y: 1 },
       ],
+    });
+  });
+
+  it("creates an angle from three clicks", () => {
+    const start = createObjectFromTool("angle", { x: 1, y: 0 }, [], [], "");
+    const vertex = createObjectFromTool("angle", { x: 0, y: 0 }, start.pendingPoints, [], "");
+    const end = createObjectFromTool("angle", { x: 0, y: 1 }, vertex.pendingPoints, [], "");
+
+    expect(end.object).toMatchObject({
+      type: "Angle",
+      start: { x: 1, y: 0 },
+      vertex: { x: 0, y: 0 },
+      end: { x: 0, y: 1 },
+    });
+  });
+
+  it("creates resizable drawing objects from a single drag", () => {
+    const rectangle = createObjectFromDrag("rectangle", { x: 2, y: 2 }, { x: -1, y: 0 }, [], "");
+    const triangle = createObjectFromDrag("triangle", { x: 0, y: 0 }, { x: 2, y: 1.5 }, [], "");
+    const angle = createObjectFromDrag("angle", { x: 0, y: 0 }, { x: 2, y: 1 }, [], "");
+
+    expect(rectangle).toMatchObject({
+      type: "Polygon",
+      points: [
+        { x: -1, y: 0 },
+        { x: 2, y: 0 },
+        { x: 2, y: 2 },
+        { x: -1, y: 2 },
+      ],
+    });
+    expect(triangle).toMatchObject({
+      type: "Polygon",
+      points: [
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        { x: 1, y: 1.5 },
+      ],
+    });
+    expect(angle).toMatchObject({
+      type: "Angle",
+      start: { x: 2, y: 0 },
+      vertex: { x: 0, y: 0 },
+      end: { x: 0, y: 1 },
     });
   });
 });

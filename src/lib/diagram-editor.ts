@@ -8,6 +8,7 @@ export type EditorTool =
   | "circle"
   | "rectangle"
   | "triangle"
+  | "angle"
   | "vector"
   | "label";
 
@@ -195,6 +196,29 @@ export function createObjectFromTool(
     };
   }
 
+  if (tool === "angle") {
+    if (pendingPoints.length < 2) {
+      return { object: null, pendingPoints: [...pendingPoints, point] };
+    }
+
+    return {
+      pendingPoints: [],
+      object: {
+        id: `angle-${sequence}-${Date.now()}`,
+        name: label || `Angle ${sequence}`,
+        type: "Angle",
+        label,
+        visibility: true,
+        start: pendingPoints[0],
+        vertex: pendingPoints[1],
+        end: point,
+        radius: 0.55,
+        semanticRole: "theorem-label",
+        style: { stroke: "#111111", strokeWidth: 1.2, labelPosition: "above-right" },
+      },
+    };
+  }
+
   if (tool !== "circle") {
     return { object: null, pendingPoints: [] };
   }
@@ -214,4 +238,52 @@ export function createObjectFromTool(
       style: { stroke: "#111111", strokeWidth: 1.1 },
     },
   };
+}
+
+export function createObjectFromDrag(
+  tool: EditorTool,
+  start: PointCoordinate,
+  end: PointCoordinate,
+  objects: DiagramObject[],
+  labelInput: string,
+): DiagramObject | null {
+  const sequence = objects.length + 1;
+  const label = labelInput.trim();
+
+  if (tool === "triangle") {
+    return {
+      id: `triangle-${sequence}-${Date.now()}`,
+      name: label || `Triangle ${sequence}`,
+      type: "Polygon",
+      label,
+      visibility: true,
+      points: [
+        { x: start.x, y: start.y },
+        { x: end.x, y: start.y },
+        { x: Number(((start.x + end.x) / 2).toFixed(2)), y: end.y },
+      ],
+      semanticRole: "area-region",
+      style: { stroke: "#111111", fill: "transparent", strokeWidth: 1.2 },
+    };
+  }
+
+  if (tool === "angle") {
+    return {
+      id: `angle-${sequence}-${Date.now()}`,
+      name: label || `Angle ${sequence}`,
+      type: "Angle",
+      label,
+      visibility: true,
+      start: { x: end.x, y: start.y },
+      vertex: start,
+      end: { x: start.x, y: end.y },
+      radius: 0.55,
+      semanticRole: "theorem-label",
+      style: { stroke: "#111111", strokeWidth: 1.2, labelPosition: "above-right" },
+    };
+  }
+
+  const first = createObjectFromTool(tool, start, [], objects, label);
+  const result = createObjectFromTool(tool, end, first.pendingPoints, objects, label);
+  return result.object;
 }

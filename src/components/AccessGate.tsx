@@ -90,12 +90,13 @@ export function AccessGate({ children }: AccessGateProps) {
   }
 
   return (
-    <main className="gate-shell">
-      <div className="gate-wordmark" aria-hidden>
-        GeoTeX
+    <div className="gate-overlay-shell">
+      <div className="gate-workspace-backdrop" aria-hidden="true" inert>
+        {children({ email: "login-required", signOut: () => undefined })}
       </div>
+
       <form
-        className="gate-card"
+        className="gate-card gate-modal-card"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -162,6 +163,6 @@ export function AccessGate({ children }: AccessGateProps) {
 
         {message ? <p className="text-sm font-medium text-stone-600">{message}</p> : null}
       </form>
-    </main>
+    </div>
   );
 }
