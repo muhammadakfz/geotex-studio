@@ -27,15 +27,45 @@ Web-based academic figure editor for creating, refining, linting, and exporting 
 
 ## Object Model
 
+GeoTeX Studio models every figure as a typed diagram with semantic roles, so the editor can drive geometry, styling, linting, and export from the same source of truth.
+
+### Diagram Object Types
+
 ```typescript
-type DiagramObjectType = "Point" | "Segment" | "Line" | "Circle" | "Vector" 
-                       | "Angle" | "Label" | "FunctionPlot" | "Polygon" | "PenPath";
+type DiagramObjectType =
+  | "Point"
+  | "Segment"
+  | "Line"
+  | "Circle"
+  | "Vector"
+  | "Angle"
+  | "Label"
+  | "FunctionPlot"
+  | "Polygon"
+  | "PenPath";
+```
 
-type SemanticRole = "main-object" | "construction-line" | "force-vector" 
-                   | "velocity-vector" | "acceleration-vector" | "electric-field-vector"
-                   | "theorem-label" | "auxiliary-point" | "function-curve" 
-                   | "area-region" | "axis" | "tangent-line";
+### Semantic Roles
 
+```typescript
+type SemanticRole =
+  | "main-object"
+  | "construction-line"
+  | "force-vector"
+  | "velocity-vector"
+  | "acceleration-vector"
+  | "electric-field-vector"
+  | "theorem-label"
+  | "auxiliary-point"
+  | "function-curve"
+  | "area-region"
+  | "axis"
+  | "tangent-line";
+```
+
+### Diagram Model
+
+```typescript
 interface DiagramModel {
   id: string;
   name: string;
@@ -45,6 +75,8 @@ interface DiagramModel {
   gridVisible: boolean;
 }
 ```
+
+This structure keeps the editor focused on three things: what the object is, what role it plays, and how the full diagram should render.
 
 ## Quick Start
 
