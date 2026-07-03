@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { Focus, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import katex from "katex";
 import type {
   DiagramModel,
   DiagramObject,
@@ -276,6 +277,7 @@ function renderAngle(
   const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
   let delta = endAngle - startAngle;
 
+  // Normalize to [-π, π] for consistent smaller angle (matches TikZ export)
   while (delta > Math.PI) delta -= Math.PI * 2;
   while (delta < -Math.PI) delta += Math.PI * 2;
 
@@ -288,6 +290,25 @@ function renderAngle(
     y: center.y + Math.sin(startAngle + delta) * radius,
   };
 
+  // Label position: midpoint of arc
+  const midAngle = startAngle + delta / 2;
+  const labelRadius = radius * 1.4;
+  const labelPos = {
+    x: center.x + Math.cos(midAngle) * labelRadius,
+    y: center.y + Math.sin(midAngle) * labelRadius,
+  };
+
+  const label = object.label;
+  let labelHtml = "";
+  if (label) {
+    const normalized = unwrapMathLabel(label);
+    try {
+      labelHtml = katex.renderToString(normalized, { throwOnError: false, displayMode: false });
+    } catch {
+      labelHtml = normalized;
+    }
+  }
+
   return (
     <g>
       <line x1={center.x} y1={center.y} x2={arcStart.x} y2={arcStart.y} {...styleFor(object, selected)} />
@@ -296,6 +317,15 @@ function renderAngle(
         d={`M ${arcStart.x} ${arcStart.y} A ${radius} ${radius} 0 0 ${delta >= 0 ? 1 : 0} ${arcEnd.x} ${arcEnd.y}`}
         {...styleFor(object, selected)}
       />
+      {labelHtml && (
+        <foreignObject x={labelPos.x - 15} y={labelPos.y - 12} width="60" height="24">
+          <span
+            className="flex items-center justify-center"
+            style={{ fontSize: "14px", display: "flex" }}
+            dangerouslySetInnerHTML={{ __html: labelHtml }}
+          />
+        </foreignObject>
+      )}
     </g>
   );
 }
@@ -867,7 +897,6 @@ function renderObject(
       return (
         <g key={object.id} {...shared}>
           {renderAngle(object, diagram, selected, canvas)}
-          {renderLabel(object, object.vertex, diagram, canvas)}
         </g>
       );
     case "Label":

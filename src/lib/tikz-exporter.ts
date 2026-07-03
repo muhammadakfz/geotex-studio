@@ -156,18 +156,35 @@ function exportPoint(object: PointObject, colors: Map<string, string>): string[]
 }
 
 function exportAngle(object: AngleObject, points: Map<string, PointObject>, colors: Map<string, string>): string {
-  if (object.pointIds?.length === 3 && object.label) {
-    const [startId, vertexId, endId] = object.pointIds;
-    const start = points.get(startId);
-    const vertex = points.get(vertexId);
-    const end = points.get(endId);
+  const start = object.pointIds?.[0] && points.has(object.pointIds[0])
+    ? points.get(object.pointIds[0])!.coordinates
+    : object.start;
+  const vertex = object.pointIds?.[1] && points.has(object.pointIds[1])
+    ? points.get(object.pointIds[1])!.coordinates
+    : object.vertex;
+  const end = object.pointIds?.[2] && points.has(object.pointIds[2])
+    ? points.get(object.pointIds[2])!.coordinates
+    : object.end;
 
-    if (start && vertex && end) {
-      return `  \\pic [${styleOptions(object, colors)}, "${labelFor(object)}", angle radius=${formatNumber(object.radius)}cm] {angle = ${coordinateNameForPoint(start)}--${coordinateNameForPoint(vertex)}--${coordinateNameForPoint(end)}};`;
-    }
-  }
+  const startAngle = Math.atan2(start.y - vertex.y, start.x - vertex.x) * 180 / Math.PI;
+  const endAngle = Math.atan2(end.y - vertex.y, end.x - vertex.x) * 180 / Math.PI;
+  let delta = endAngle - startAngle;
 
-  return `  \\draw[${styleOptions(object, colors)}] ${formatPoint(object.vertex)} ++(0:${formatNumber(object.radius)}) arc (0:45:${formatNumber(object.radius)});`;
+  // Normalize delta to [-180, 180] to get the smaller angle
+  while (delta > 180) delta -= 360;
+  while (delta < -180) delta += 360;
+
+  const label = labelFor(object);
+  const midAngle = startAngle + delta / 2;
+  const labelPos = label
+    ? ` +(${formatNumber(object.radius * 1.3 * Math.cos(midAngle * Math.PI / 180))},${formatNumber(object.radius * 1.3 * Math.sin(midAngle * Math.PI / 180))}) node[anchor=west, font=\\small] {${
+        label.includes("^") || label.includes("\\")
+          ? label.replace(/\\circ/, "^\\circ")
+          : label
+      }$}`
+    : "";
+
+  return `  \\draw[${styleOptions(object, colors)}] ${formatPoint(vertex)} ++(${formatNumber(startAngle)}:${formatNumber(object.radius)}) arc (${formatNumber(startAngle)}:${formatNumber(startAngle + delta)}:${formatNumber(object.radius)})${labelPos};`;
 }
 
 function exportFunctionPlot(object: FunctionPlotObject, colors: Map<string, string>, diagram: DiagramModel): string {
@@ -266,7 +283,7 @@ export function exportTikz(diagram: DiagramModel, options: TikzExportOptions = {
     "% Required packages:",
     "% \\usepackage{tikz}",
     "% \\usepackage{xcolor}",
-    "% \\usetikzlibrary{arrows.meta, angles, quotes, calc}",
+    "% \\usetikzlibrary{arrows.meta, quotes, calc}",
     "",
     ...colorDefinitions,
     colorDefinitions.length > 0 ? "" : null,
@@ -291,7 +308,7 @@ export function exportTikz(diagram: DiagramModel, options: TikzExportOptions = {
 
   return {
     code,
-    requiredPackages: ["tikz", "xcolor", "arrows.meta", "angles", "quotes", "calc"],
+    requiredPackages: ["tikz", "xcolor", "arrows.meta", "quotes", "calc"],
     pureTikz: true,
     usesPgfplots: false,
   };
