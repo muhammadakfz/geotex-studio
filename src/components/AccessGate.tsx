@@ -107,21 +107,22 @@ export function AccessGate({ children }: AccessGateProps) {
             <p className="gate-eyebrow">GeoTeX Studio</p>
             <h1 className="gate-title">Open your figure workspace.</h1>
           </div>
-          <span className="gate-chip">TikZ-ready</span>
         </div>
 
-        <div className="grid grid-cols-2 rounded-md border border-white/45 bg-white/20 p-1">
+        <div className="gate-segmented">
           <button
             type="button"
             onClick={() => setMode("login")}
-            className={mode === "login" ? "segmented-active" : "segmented-item"}
+            aria-pressed={mode === "login"}
+            className={mode === "login" ? "auth-tab-active" : "auth-tab"}
           >
             Sign in
           </button>
           <button
             type="button"
             onClick={() => setMode("register")}
-            className={mode === "register" ? "segmented-active" : "segmented-item"}
+            aria-pressed={mode === "register"}
+            className={mode === "register" ? "auth-tab-active" : "auth-tab"}
           >
             Register
           </button>
