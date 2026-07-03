@@ -1,9 +1,11 @@
-import type { DiagramModel, DiagramObject, PointCoordinate } from "./diagram-types";
+import type { DiagramModel, DiagramObject, GeometryAnchor, PointCoordinate } from "./diagram-types";
 
 export type EditorTool =
   | "select"
   | "hand"
   | "point"
+  | "pen"
+  | "line"
   | "segment"
   | "circle"
   | "rectangle"
@@ -54,12 +56,60 @@ export function nextPointLabel(objects: DiagramObject[]): string {
       .map((object) => (object.label ?? object.name).replace(/\$/g, "")),
   );
 
-  for (let index = 0; index < 26; index += 1) {
-    const label = String.fromCharCode(65 + index);
+  for (let index = 0; index < 260; index += 1) {
+    const letter = String.fromCharCode(65 + (index % 26));
+    const number = Math.floor(index / 26);
+    const label = number > 0 ? `${letter}_${number}` : letter;
     if (!used.has(label)) return label;
   }
 
   return `P_${objects.filter((object) => object.type === "Point").length + 1}`;
+}
+
+function dedupePathPoints(
+  points: PointCoordinate[],
+  anchors: (GeometryAnchor | null)[] = [],
+  minDistance = 0.025,
+): { points: PointCoordinate[]; anchors: (GeometryAnchor | null)[] } {
+  const cleanPoints: PointCoordinate[] = [];
+  const cleanAnchors: (GeometryAnchor | null)[] = [];
+
+  points.forEach((point, index) => {
+    const rounded = roundPoint(point);
+    const previous = cleanPoints[cleanPoints.length - 1];
+    if (!previous || Math.hypot(rounded.x - previous.x, rounded.y - previous.y) >= minDistance) {
+      cleanPoints.push(rounded);
+      cleanAnchors.push(anchors[index] ?? null);
+    }
+  });
+
+  return { points: cleanPoints, anchors: cleanAnchors };
+}
+
+export function createPenPath(
+  points: PointCoordinate[],
+  objects: DiagramObject[],
+  labelInput: string,
+  anchors: (GeometryAnchor | null)[] = [],
+): DiagramObject | null {
+  const { points: clean, anchors: cleanAnchors } = dedupePathPoints(points, anchors);
+  if (clean.length < 2) return null;
+
+  const sequence = objects.length + 1;
+  const label = labelInput.trim();
+
+  return {
+    id: `pen-${sequence}-${Date.now()}`,
+    name: label || `Pen ${sequence}`,
+    type: "PenPath",
+    label,
+    visibility: true,
+    points: clean,
+    anchors: cleanAnchors.some(Boolean) ? cleanAnchors : undefined,
+    smooth: false,
+    semanticRole: "main-object",
+    style: { stroke: "#111111", fill: "transparent", strokeWidth: 1.25 },
+  };
 }
 
 export function createObjectFromTool(
@@ -72,7 +122,7 @@ export function createObjectFromTool(
   const sequence = objects.length + 1;
   const label = labelInput.trim();
 
-  if (tool === "select" || tool === "hand") {
+  if (tool === "select" || tool === "hand" || tool === "pen") {
     return { object: null, pendingPoints: [] };
   }
 
@@ -130,6 +180,22 @@ export function createObjectFromTool(
         end: point,
         semanticRole: "main-object",
         style: { stroke: "#111111", strokeWidth: 1.2 },
+      },
+    };
+  }
+
+  if (tool === "line") {
+    return {
+      pendingPoints: [],
+      object: {
+        id: `line-${sequence}-${Date.now()}`,
+        name: label || `Line ${sequence}`,
+        type: "Line",
+        label,
+        visibility: true,
+        through: [start, point],
+        semanticRole: "construction-line",
+        style: { stroke: "#111111", strokeWidth: 1 },
       },
     };
   }

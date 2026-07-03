@@ -236,7 +236,7 @@ export function ProjectPanel({
           value={newProjectName}
           onChange={(event) => setNewProjectName(event.target.value)}
           disabled={!cloudEnabled}
-          className="h-10 rounded-md border border-stone-200 px-3 text-sm outline-none transition focus:border-stone-500 disabled:bg-stone-50"
+          className="property-input w-full disabled:opacity-50"
         />
         <button
           type="button"
@@ -252,7 +252,7 @@ export function ProjectPanel({
           value={selectedProjectId}
           onChange={(event) => setSelectedProjectId(event.target.value)}
           disabled={!cloudEnabled}
-          className="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm outline-none transition focus:border-stone-500 disabled:bg-stone-50"
+          className="property-input w-full disabled:opacity-50"
         >
           <option value="">Project List</option>
           {projects.map((project) => (
@@ -265,7 +265,7 @@ export function ProjectPanel({
           value={selectedDiagramId}
           onChange={(event) => setSelectedDiagramId(event.target.value)}
           disabled={!cloudEnabled}
-          className="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm outline-none transition focus:border-stone-500 disabled:bg-stone-50"
+          className="property-input w-full disabled:opacity-50"
         >
           <option value="">Load Diagram</option>
           {diagrams.map((item) => (

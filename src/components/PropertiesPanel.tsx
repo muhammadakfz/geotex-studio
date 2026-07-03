@@ -1,13 +1,13 @@
 "use client";
 
-import { Eye, EyeOff, Palette } from "lucide-react";
+import { Eye, EyeOff, FlipHorizontal2, FlipVertical2, Palette } from "lucide-react";
 import type {
   DiagramObject,
   DiagramStyle,
   LabelPosition,
   SemanticRole,
 } from "@/lib/diagram-types";
-import { objectGeometry, type ObjectGeometryPatch } from "@/lib/diagram-geometry";
+import { objectGeometry, type MirrorAxis, type ObjectGeometryPatch } from "@/lib/diagram-geometry";
 
 export interface ObjectPatch {
   name?: string;
@@ -17,6 +17,8 @@ export interface ObjectPatch {
   semanticRole?: SemanticRole;
   style?: Partial<DiagramStyle>;
   geometry?: ObjectGeometryPatch;
+  lineKind?: "line" | "segment";
+  transform?: { mirror?: MirrorAxis };
 }
 
 interface PropertiesPanelProps {
@@ -103,6 +105,10 @@ function canFill(object: DiagramObject): boolean {
   return ["Circle", "Polygon", "Point", "Label"].includes(object.type);
 }
 
+function canMirror(object: DiagramObject): boolean {
+  return object.type !== "Point" && object.type !== "Label" && object.type !== "Circle";
+}
+
 export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
   if (!object) {
     return (
@@ -111,8 +117,8 @@ export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
           <span>Properties</span>
           <span className="status-pill">none</span>
         </div>
-        <div className="rounded-md border border-dashed border-stone-200 bg-stone-50 p-4 text-sm text-stone-500">
-          Select an object to edit stroke, fill, line style, labels, and opacity.
+        <div className="panel-empty">
+          No selection.
         </div>
       </section>
     );
@@ -176,11 +182,48 @@ export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
           </select>
         </label>
 
+        {object.type === "Line" || object.type === "Segment" ? (
+          <label className="property-row">
+            <span>Kind</span>
+            <select
+              value={object.type === "Line" ? "line" : "segment"}
+              onChange={(event) => onChange({ lineKind: event.target.value as "line" | "segment" })}
+              className="property-input"
+            >
+              <option value="segment">Segment</option>
+              <option value="line">Line</option>
+            </select>
+          </label>
+        ) : null}
+
         <div className="geometry-grid">
           <GeometryField label="X" value={geometry.x} onCommit={(value) => updateGeometry("x", value)} />
           <GeometryField label="Y" value={geometry.y} onCommit={(value) => updateGeometry("y", value)} />
           <GeometryField label="W" value={geometry.w} min={0} onCommit={(value) => updateGeometry("w", value)} />
           <GeometryField label="H" value={geometry.h} min={0} onCommit={(value) => updateGeometry("h", value)} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onChange({ transform: { mirror: "horizontal" } })}
+            disabled={!canMirror(object)}
+            title="Mirror horizontal"
+            className="icon-button-secondary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <FlipHorizontal2 className="h-4 w-4" aria-hidden />
+            Mirror H
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ transform: { mirror: "vertical" } })}
+            disabled={!canMirror(object)}
+            title="Mirror vertical"
+            className="icon-button-secondary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <FlipVertical2 className="h-4 w-4" aria-hidden />
+            Mirror V
+          </button>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -190,7 +233,7 @@ export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
               type="color"
               value={stroke}
               onInput={(event) => onChange({ style: { stroke: event.currentTarget.value } })}
-              className="h-9 w-full cursor-pointer rounded-md border border-stone-200 bg-white"
+              className="color-input"
             />
           </label>
           <label className="property-tile">
@@ -200,7 +243,7 @@ export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
               value={fill}
               disabled={!canFill(object) || !fillEnabled}
               onInput={(event) => onChange({ style: { fill: event.currentTarget.value } })}
-              className="h-9 w-full cursor-pointer rounded-md border border-stone-200 bg-white disabled:opacity-40"
+              className="color-input disabled:opacity-40"
             />
           </label>
         </div>

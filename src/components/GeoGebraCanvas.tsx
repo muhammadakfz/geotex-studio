@@ -11,6 +11,7 @@ interface GeoGebraCanvasProps {
   selectedObjectIds?: string[];
   activeTool?: EditorTool;
   pendingPoints?: PointCoordinate[];
+  activePenPathId?: string | null;
   coordinatesVisible?: boolean;
   useGeoGebraBridge?: boolean;
   onSelectObjects?: (ids: string[]) => void;
@@ -40,6 +41,7 @@ export function GeoGebraCanvas({
   selectedObjectIds = [],
   activeTool = "select",
   pendingPoints = [],
+  activePenPathId = null,
   coordinatesVisible = true,
   useGeoGebraBridge = false,
   onSelectObjects,
@@ -110,6 +112,7 @@ export function GeoGebraCanvas({
           selectedObjectIds={selectedObjectIds}
           activeTool={activeTool}
           pendingPoints={pendingPoints}
+          activePenPathId={activePenPathId}
           coordinatesVisible={coordinatesVisible}
           onSelectObjects={onSelectObjects}
           onCanvasPoint={onCanvasPoint}

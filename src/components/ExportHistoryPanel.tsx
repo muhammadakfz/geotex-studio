@@ -61,17 +61,17 @@ export function ExportHistoryPanel({ cloudEnabled, diagramId, refreshToken, onMe
         <RefreshCw className="h-4 w-4" aria-hidden />
         Refresh
       </button>
-      <div className="mt-3 max-h-40 space-y-2 overflow-auto">
+      <div className="panel-list">
         {exports.length === 0 ? (
-          <p className="flex items-center gap-2 text-sm text-stone-500">
+          <p className="panel-empty">
             <History className="h-4 w-4" aria-hidden />
             No exports yet.
           </p>
         ) : (
           exports.map((item) => (
-            <div key={item.id} className="rounded-md border border-stone-200 bg-white px-3 py-2 text-sm">
-              <div className="font-semibold uppercase text-stone-900">{item.export_format}</div>
-              <div className="text-xs text-stone-500">{item.required_packages.join(", ")}</div>
+            <div key={item.id} className="panel-list-card">
+              <div className="panel-list-title">{item.export_format}</div>
+              <div className="panel-list-copy">{item.required_packages.join(", ")}</div>
             </div>
           ))
         )}

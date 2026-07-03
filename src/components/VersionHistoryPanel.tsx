@@ -106,14 +106,14 @@ export function VersionHistoryPanel({
           <RefreshCw className="h-4 w-4" aria-hidden />
         </button>
       </div>
-      <div className="mt-3 max-h-40 space-y-2 overflow-auto">
+      <div className="panel-list">
         {versions.length === 0 ? (
-          <p className="text-sm text-stone-500">No saved versions.</p>
+          <p className="panel-empty">No saved versions.</p>
         ) : (
           versions.map((version) => (
-            <div key={version.id} className="rounded-md border border-stone-200 bg-white px-3 py-2 text-sm">
-              <div className="font-semibold text-stone-900">Version {version.version_number}</div>
-              <div className="text-xs text-stone-500">Score {version.linter_score ?? "-"}</div>
+            <div key={version.id} className="panel-list-card">
+              <div className="panel-list-title">Version {version.version_number}</div>
+              <div className="panel-list-copy">Score {version.linter_score ?? "-"}</div>
             </div>
           ))
         )}

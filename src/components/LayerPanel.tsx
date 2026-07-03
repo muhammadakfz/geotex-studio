@@ -1,11 +1,28 @@
-import { ChevronsDown, ChevronsUp, ChevronDown, ChevronUp } from "lucide-react";
-import type { DiagramModel } from "@/lib/diagram-types";
+import { useState } from "react";
+import { ChevronsDown, ChevronsUp, ChevronDown, ChevronUp, Plus } from "lucide-react";
+import type { DiagramModel, DiagramObject } from "@/lib/diagram-types";
 
 interface LayerPanelProps {
   diagram: DiagramModel;
   selectedObjectIds?: string[];
   onSelectObjects: (ids: string[]) => void;
   onLayerAction: (action: "front" | "up" | "down" | "back") => void;
+  onEditExpression?: (objectId: string, expression: string) => void;
+  onCreateExpression?: (expression: string) => void;
+}
+
+function getAlgebraicString(object: DiagramObject): string {
+  if (object.type === "Point") return `${object.name}=(${object.coordinates.x}, ${object.coordinates.y})`;
+  if (object.type === "Line" && object.pointIds?.length === 2) return `Line(${object.pointIds[0]}, ${object.pointIds[1]})`;
+  if (object.type === "Line") return `Line((${object.through[0].x}, ${object.through[0].y}), (${object.through[1].x}, ${object.through[1].y}))`;
+  if (object.type === "Segment" && object.startPointId && object.endPointId) return `Segment(${object.startPointId}, ${object.endPointId})`;
+  if (object.type === "Segment") return `Segment((${object.start.x}, ${object.start.y}), (${object.end.x}, ${object.end.y}))`;
+  if (object.type === "Vector") return `Vector((${object.start.x}, ${object.start.y}), (${object.end.x}, ${object.end.y}))`;
+  if (object.type === "Circle") return `Circle((${object.center.x}, ${object.center.y}), ${object.radius.toFixed(2)})`;
+  if (object.type === "Polygon") return `Polygon(${object.points.length} vertices)`;
+  if (object.type === "FunctionPlot") return `f(x) = ${object.expression}`;
+  if (object.type === "Angle") return `Angle(${object.start.x}, ${object.vertex.x}, ${object.end.x})`;
+  return object.semanticRole;
 }
 
 export function LayerPanel({
@@ -13,21 +30,41 @@ export function LayerPanel({
   selectedObjectIds = [],
   onSelectObjects,
   onLayerAction,
+  onEditExpression,
+  onCreateExpression,
 }: LayerPanelProps) {
   const selectedCount = selectedObjectIds.length;
   const objectCount = diagram.objects.length;
   const selectedSet = new Set(selectedObjectIds);
-  const layerObjects = [...diagram.objects].reverse();
+  const layerObjects = [...diagram.objects];
   const disabled = selectedCount === 0;
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [newValue, setNewValue] = useState("");
+
+  const handleEditSubmit = (objectId: string) => {
+    if (editingId === objectId && onEditExpression) {
+      onEditExpression(objectId, editValue);
+    }
+    setEditingId(null);
+  };
+
+  const handleCreateSubmit = () => {
+    if (newValue.trim() && onCreateExpression) {
+      onCreateExpression(newValue);
+      setNewValue("");
+    }
+  };
+
   return (
-    <section className="tool-panel">
-      <div className="panel-heading">
-        <span>Layer</span>
+    <section className="tool-panel flex h-full flex-col">
+      <div className="panel-heading shrink-0">
+        <span>Algebra</span>
         <span className="status-pill">{selectedCount > 0 ? `${selectedCount}/${objectCount}` : objectCount}</span>
       </div>
 
-      <div className="grid grid-cols-4 gap-2">
+      <div className="mb-3 grid shrink-0 grid-cols-4 gap-2">
         <button type="button" onClick={() => onLayerAction("front")} disabled={disabled} title="Bring to front" className="layer-button">
           <ChevronsUp className="h-4 w-4" aria-hidden />
         </button>
@@ -42,46 +79,93 @@ export function LayerPanel({
         </button>
       </div>
 
-      <div className="mt-3 space-y-2">
+      <div className="flex-1 space-y-2 overflow-y-auto pr-1 pb-4">
         {diagram.objects.length === 0 ? (
-          <div className="rounded-md border border-dashed border-stone-200 bg-stone-50 p-3 text-sm text-stone-500">
+          <div className="panel-empty">
             No objects yet.
           </div>
         ) : null}
-        {layerObjects.map((object, index) => (
-          <button
-            key={object.id}
-            type="button"
-            onClick={(event) => {
-              if (event.shiftKey) {
-                onSelectObjects(
-                  selectedSet.has(object.id)
-                    ? selectedObjectIds.filter((id) => id !== object.id)
-                    : [...selectedObjectIds, object.id],
-                );
-                return;
-              }
-              onSelectObjects([object.id]);
+        {layerObjects.map((object) => {
+          const isSelected = selectedSet.has(object.id);
+          const isEditing = editingId === object.id;
+
+          return (
+            <div
+              key={object.id}
+              className={`layer-card ${
+                isSelected
+                  ? "layer-card-active"
+                  : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="w-full px-3 py-1.5 text-left"
+                onClick={(event) => {
+                  if (event.shiftKey) {
+                    onSelectObjects(
+                      isSelected
+                        ? selectedObjectIds.filter((id) => id !== object.id)
+                        : [...selectedObjectIds, object.id],
+                    );
+                    return;
+                  }
+                  onSelectObjects([object.id]);
+                }}
+              >
+                <div className="flex items-center justify-between gap-3 text-sm font-semibold">
+                  <span className="truncate">{object.name}</span>
+                  <span className="layer-type-badge">
+                    {object.type}
+                  </span>
+                </div>
+              </button>
+
+              <div className="layer-expression">
+                {isEditing ? (
+                  <input
+                    autoFocus
+                    type="text"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={() => handleEditSubmit(object.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleEditSubmit(object.id);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    className="w-full bg-transparent font-mono text-xs outline-none"
+                    placeholder="e.g. A=(2,3)"
+                  />
+                ) : (
+                  <div
+                    className="cursor-text truncate font-mono text-xs"
+                    onClick={() => {
+                      setEditingId(object.id);
+                      const prefix = (object.type === "Point" || object.type === "Line" || object.type === "Circle") ? `${object.name}=` : "";
+                      setEditValue(`${prefix}${getAlgebraicString(object)}`);
+                    }}
+                  >
+                    {getAlgebraicString(object)}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="expression-entry">
+          <Plus className="h-4 w-4 shrink-0" />
+          <input
+            type="text"
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleCreateSubmit();
             }}
-            className={`w-full rounded-md border px-3 py-2 text-left transition ${
-              selectedSet.has(object.id)
-                ? "border-black bg-black text-white"
-                : "border-black bg-white text-black hover:bg-neutral-100"
-            }`}
-          >
-            <div className="flex items-center justify-between gap-3 text-sm font-semibold">
-              <span className="truncate">
-                {index + 1}. {object.name}
-              </span>
-              <span className={`shrink-0 text-xs font-medium ${selectedSet.has(object.id) ? "text-white" : "text-neutral-500"}`}>
-                {object.type}
-              </span>
-            </div>
-            <div className={`mt-1 truncate text-xs ${selectedSet.has(object.id) ? "text-white" : "text-neutral-500"}`}>
-              {object.semanticRole}
-            </div>
-          </button>
-        ))}
+            placeholder="New expression..."
+            className="w-full bg-transparent font-mono text-xs text-black outline-none"
+          />
+        </div>
       </div>
     </section>
   );

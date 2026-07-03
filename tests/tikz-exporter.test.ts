@@ -68,4 +68,49 @@ describe("tikz exporter", () => {
     expect(exportTikz(diagram).code).not.toContain("Optional cartesian guide");
     expect(exportTikz(diagram, { includeCartesian: true }).code).toContain("Optional cartesian guide");
   });
+
+  it("keeps default exports free of gray styling", () => {
+    const diagram = geometryFixture();
+    const exportResult = exportTikz(diagram, { includeCartesian: true });
+
+    expect(exportResult.code).not.toMatch(/gr[ae]y/i);
+    expect(exportResult.code).toContain("area region/.style={draw=black}");
+  });
+
+  it("exports line objects as solid unless dashed is explicitly enabled", () => {
+    const diagram = createBlankDiagram();
+    const lineStart = createObjectFromTool("line", { x: -1, y: -1 }, [], [], "");
+    const lineEnd = createObjectFromTool("line", { x: 2, y: 2 }, lineStart.pendingPoints, [], "");
+
+    diagram.objects = [lineEnd.object!];
+    const solidExport = exportTikz(diagram).code;
+
+    expect(solidExport).toContain("construction line/.style={thin}");
+    expect(solidExport).toContain("\\draw[construction line, draw=black, line width=1pt] (-1,-1) -- (2,2);");
+    expect(solidExport).not.toContain("construction line/.style={thin, dashed}");
+
+    diagram.objects = [{ ...lineEnd.object!, style: { ...lineEnd.object!.style, dashed: true } }];
+    expect(exportTikz(diagram).code).toContain("\\draw[construction line, draw=black, line width=1pt, dashed] (-1,-1) -- (2,2);");
+  });
+
+  it("exports pen paths as solid TikZ polylines", () => {
+    const diagram = createBlankDiagram();
+    diagram.objects = [
+      {
+        id: "pen-1",
+        name: "Pen 1",
+        type: "PenPath",
+        visibility: true,
+        points: [
+          { x: 0, y: 0 },
+          { x: 0.5, y: 1 },
+          { x: 1, y: 0 },
+        ],
+        semanticRole: "main-object",
+        style: { stroke: "#111111", fill: "transparent", strokeWidth: 1.25 },
+      },
+    ];
+
+    expect(exportTikz(diagram).code).toContain("\\draw[main line, draw=black, line width=1.25pt] (0,0) -- (0.5,1) -- (1,0);");
+  });
 });

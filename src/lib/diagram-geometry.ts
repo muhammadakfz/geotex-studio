@@ -21,6 +21,8 @@ export interface ObjectGeometryPatch {
   h?: number;
 }
 
+export type MirrorAxis = "horizontal" | "vertical";
+
 const minSize = 0.01;
 
 function round(value: number): number {
@@ -49,15 +51,13 @@ function normalizeBounds(bounds: ObjectBounds): ObjectBounds {
 
 export function objectBounds(object: DiagramObject): ObjectBounds {
   switch (object.type) {
-    case "Point": {
-      const pad = Math.max((object.style.pointSize ?? 3.2) / 42, 0.08);
-      return pointsBounds([object.coordinates], pad);
-    }
+    case "Point":
+      return pointsBounds([object.coordinates]);
     case "Segment":
     case "Vector":
-      return pointsBounds([object.start, object.end], 0.08);
+      return pointsBounds([object.start, object.end]);
     case "Line":
-      return pointsBounds(object.through, 0.08);
+      return pointsBounds(object.through);
     case "Circle":
       return {
         minX: object.center.x - object.radius,
@@ -66,13 +66,15 @@ export function objectBounds(object: DiagramObject): ObjectBounds {
         maxY: object.center.y + object.radius,
       };
     case "Polygon":
-      return pointsBounds(object.points, 0.08);
+      return pointsBounds(object.points);
+    case "PenPath":
+      return pointsBounds(object.points);
     case "Angle":
-      return pointsBounds([object.start, object.vertex, object.end], 0.08);
+      return pointsBounds([object.start, object.vertex, object.end]);
     case "Label":
-      return pointsBounds([object.position], 0.18);
+      return pointsBounds([object.position]);
     case "FunctionPlot":
-      return pointsBounds(object.samples, 0.08);
+      return pointsBounds(object.samples);
   }
 }
 
@@ -116,6 +118,67 @@ export function translatePoint(point: PointCoordinate, dx: number, dy: number): 
   };
 }
 
+export function rotatePoint(point: PointCoordinate, center: PointCoordinate, angleRadians: number): PointCoordinate {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const cos = Math.cos(angleRadians);
+  const sin = Math.sin(angleRadians);
+
+  return {
+    x: round(center.x + dx * cos - dy * sin),
+    y: round(center.y + dx * sin + dy * cos),
+  };
+}
+
+function mirrorPoint(point: PointCoordinate, center: PointCoordinate, axis: MirrorAxis): PointCoordinate {
+  return axis === "horizontal"
+    ? { x: round(center.x * 2 - point.x), y: round(point.y) }
+    : { x: round(point.x), y: round(center.y * 2 - point.y) };
+}
+
+function distance(a: PointCoordinate, b: PointCoordinate): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function normalizedAngleDelta(start: number, end: number): number {
+  let delta = end - start;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
+function angleBisectorUnit(object: Extract<DiagramObject, { type: "Angle" }>): PointCoordinate {
+  const startAngle = Math.atan2(object.start.y - object.vertex.y, object.start.x - object.vertex.x);
+  const endAngle = Math.atan2(object.end.y - object.vertex.y, object.end.x - object.vertex.x);
+  const midAngle = startAngle + normalizedAngleDelta(startAngle, endAngle) / 2;
+
+  return { x: Math.cos(midAngle), y: Math.sin(midAngle) };
+}
+
+export function angleRadiusHandlePoint(object: Extract<DiagramObject, { type: "Angle" }>): PointCoordinate {
+  const direction = angleBisectorUnit(object);
+
+  return {
+    x: round(object.vertex.x + direction.x * object.radius),
+    y: round(object.vertex.y + direction.y * object.radius),
+  };
+}
+
+function angleRadiusFromPoint(
+  object: Extract<DiagramObject, { type: "Angle" }>,
+  point: PointCoordinate,
+): number {
+  const direction = angleBisectorUnit(object);
+  const rawRadius = Math.max(
+    0,
+    (point.x - object.vertex.x) * direction.x + (point.y - object.vertex.y) * direction.y,
+  );
+  const shortestRay = Math.min(distance(object.vertex, object.start), distance(object.vertex, object.end));
+  const maxRadius = Number.isFinite(shortestRay) && shortestRay > 0.14 ? shortestRay * 0.92 : rawRadius;
+
+  return round(Math.max(0.12, Math.min(rawRadius, maxRadius)));
+}
+
 export function translateObject(object: DiagramObject, dx: number, dy: number): DiagramObject {
   switch (object.type) {
     case "Point":
@@ -128,6 +191,8 @@ export function translateObject(object: DiagramObject, dx: number, dy: number): 
     case "Circle":
       return { ...object, center: translatePoint(object.center, dx, dy) };
     case "Polygon":
+      return { ...object, points: object.points.map((point) => translatePoint(point, dx, dy)) };
+    case "PenPath":
       return { ...object, points: object.points.map((point) => translatePoint(point, dx, dy)) };
     case "Angle":
       return {
@@ -144,6 +209,96 @@ export function translateObject(object: DiagramObject, dx: number, dy: number): 
         domain: [round(object.domain[0] + dx), round(object.domain[1] + dx)],
         samples: object.samples.map((point) => translatePoint(point, dx, dy)),
       };
+  }
+}
+
+export function mirrorObject(object: DiagramObject, axis: MirrorAxis): DiagramObject {
+  const geometry = objectGeometry(object);
+  const center = { x: geometry.x, y: geometry.y };
+
+  switch (object.type) {
+    case "Point":
+      return { ...object, coordinates: mirrorPoint(object.coordinates, center, axis) };
+    case "Segment":
+    case "Vector":
+      return {
+        ...object,
+        start: mirrorPoint(object.start, center, axis),
+        end: mirrorPoint(object.end, center, axis),
+      };
+    case "Line":
+      return {
+        ...object,
+        through: [mirrorPoint(object.through[0], center, axis), mirrorPoint(object.through[1], center, axis)],
+      };
+    case "Circle":
+      return { ...object, center: mirrorPoint(object.center, center, axis) };
+    case "Polygon":
+      return { ...object, points: object.points.map((point) => mirrorPoint(point, center, axis)) };
+    case "PenPath":
+      return { ...object, points: object.points.map((point) => mirrorPoint(point, center, axis)) };
+    case "Angle":
+      return {
+        ...object,
+        start: mirrorPoint(object.start, center, axis),
+        vertex: mirrorPoint(object.vertex, center, axis),
+        end: mirrorPoint(object.end, center, axis),
+      };
+    case "Label":
+      return { ...object, position: mirrorPoint(object.position, center, axis) };
+    case "FunctionPlot": {
+      const samples = object.samples.map((point) => mirrorPoint(point, center, axis));
+      return {
+        ...object,
+        domain: [samples[0]?.x ?? object.domain[0], samples[samples.length - 1]?.x ?? object.domain[1]],
+        samples,
+      };
+    }
+  }
+}
+
+export function rotateObject(object: DiagramObject, center: PointCoordinate, angleRadians: number): DiagramObject {
+  switch (object.type) {
+    case "Point":
+      return { ...object, coordinates: rotatePoint(object.coordinates, center, angleRadians) };
+    case "Segment":
+    case "Vector":
+      return {
+        ...object,
+        start: rotatePoint(object.start, center, angleRadians),
+        end: rotatePoint(object.end, center, angleRadians),
+      };
+    case "Line":
+      return {
+        ...object,
+        through: [
+          rotatePoint(object.through[0], center, angleRadians),
+          rotatePoint(object.through[1], center, angleRadians),
+        ],
+      };
+    case "Circle":
+      return { ...object, center: rotatePoint(object.center, center, angleRadians) };
+    case "Polygon":
+      return { ...object, points: object.points.map((point) => rotatePoint(point, center, angleRadians)) };
+    case "PenPath":
+      return { ...object, points: object.points.map((point) => rotatePoint(point, center, angleRadians)) };
+    case "Angle":
+      return {
+        ...object,
+        start: rotatePoint(object.start, center, angleRadians),
+        vertex: rotatePoint(object.vertex, center, angleRadians),
+        end: rotatePoint(object.end, center, angleRadians),
+      };
+    case "Label":
+      return { ...object, position: rotatePoint(object.position, center, angleRadians) };
+    case "FunctionPlot": {
+      const samples = object.samples.map((point) => rotatePoint(point, center, angleRadians));
+      return {
+        ...object,
+        domain: [samples[0]?.x ?? object.domain[0], samples[samples.length - 1]?.x ?? object.domain[1]],
+        samples,
+      };
+    }
   }
 }
 
@@ -211,6 +366,8 @@ export function resizeObjectToBounds(object: DiagramObject, rawBounds: ObjectBou
       };
     case "Polygon":
       return { ...object, points: object.points.map((point) => scalePoint(point, source, target)) };
+    case "PenPath":
+      return { ...object, points: object.points.map((point) => scalePoint(point, source, target)) };
     case "Angle":
       return {
         ...object,
@@ -268,9 +425,17 @@ export function updateObjectHandle(object: DiagramObject, handle: string, point:
         points: object.points.map((item, itemIndex) => (itemIndex === index ? nextPoint : item)),
       };
     }
+    case "PenPath": {
+      const index = Number(handle.replace("pen-", ""));
+      return {
+        ...object,
+        points: object.points.map((item, itemIndex) => (itemIndex === index ? nextPoint : item)),
+      };
+    }
     case "Angle":
       if (handle === "start") return { ...object, start: nextPoint };
       if (handle === "vertex") return { ...object, vertex: nextPoint };
+      if (handle === "radius") return { ...object, radius: angleRadiusFromPoint(object, nextPoint) };
       return { ...object, end: nextPoint };
     case "Label":
       return { ...object, position: nextPoint };

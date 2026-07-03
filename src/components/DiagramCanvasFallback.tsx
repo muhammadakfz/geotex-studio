@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
-import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Focus, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import type {
   DiagramModel,
   DiagramObject,
@@ -9,14 +9,22 @@ import type {
   PointCoordinate,
 } from "@/lib/diagram-types";
 import { createObjectFromDrag, type EditorTool } from "@/lib/diagram-editor";
-import { resizeObjectToBounds } from "@/lib/diagram-geometry";
+import {
+  angleRadiusHandlePoint,
+  rotateObject,
+  translateObject,
+  updateObjectHandle,
+} from "@/lib/diagram-geometry";
+import { syncLinkedDiagram } from "@/lib/diagram-links";
 import { unwrapMathLabel } from "@/lib/latex-normalizer";
+import { sampleFunctionPlot } from "@/lib/quick-constructs";
 
 interface DiagramCanvasFallbackProps {
   diagram: DiagramModel;
   selectedObjectIds?: string[];
   activeTool?: EditorTool;
   pendingPoints?: PointCoordinate[];
+  activePenPathId?: string | null;
   coordinatesVisible?: boolean;
   onSelectObjects?: (ids: string[]) => void;
   onCanvasPoint?: (point: PointCoordinate) => void;
@@ -37,6 +45,14 @@ type DragState =
       objectId: string;
       handle: string;
       startDiagram: DiagramModel;
+    }
+  | {
+      kind: "rotate";
+      objectId: string;
+      startDiagram: DiagramModel;
+      center: PointCoordinate;
+      startAngle: number;
+      angleDelta: number;
     }
   | {
       kind: "marquee";
@@ -106,8 +122,12 @@ function formatTick(value: number): string {
   return Number(value.toFixed(decimals)).toString();
 }
 
+function formatDegrees(angleRadians: number): string {
+  return `${Math.round((angleRadians * 180) / Math.PI)} deg`;
+}
+
 function isDragCreateTool(tool: EditorTool): boolean {
-  return ["segment", "vector", "rectangle", "circle", "triangle", "angle"].includes(tool);
+  return ["line", "segment", "vector", "rectangle", "circle", "triangle"].includes(tool);
 }
 
 function fitViewportToCanvas(viewport: DiagramViewport, canvas: CanvasSize): DiagramViewport {
@@ -202,6 +222,22 @@ function labelOffset(position?: string): PointCoordinate {
   }
 }
 
+function materializeFunctionPlot(
+  object: Extract<DiagramObject, { type: "FunctionPlot" }>,
+  viewport: DiagramViewport,
+): Extract<DiagramObject, { type: "FunctionPlot" }> {
+  try {
+    const { samples } = sampleFunctionPlot(object.expression, viewport, 320);
+    return {
+      ...object,
+      domain: [viewport.minX, viewport.maxX],
+      samples,
+    };
+  } catch {
+    return object;
+  }
+}
+
 function renderLabel(
   object: DiagramObject,
   anchor: PointCoordinate,
@@ -234,11 +270,33 @@ function renderAngle(
 ) {
   const center = toSvg(object.vertex, diagram, canvas);
   const radius = object.radius * (canvas.width / (diagram.viewport.maxX - diagram.viewport.minX));
+  const start = toSvg(object.start, diagram, canvas);
+  const end = toSvg(object.end, diagram, canvas);
+  const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+  const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+  let delta = endAngle - startAngle;
+
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+
+  const arcStart = {
+    x: center.x + Math.cos(startAngle) * radius,
+    y: center.y + Math.sin(startAngle) * radius,
+  };
+  const arcEnd = {
+    x: center.x + Math.cos(startAngle + delta) * radius,
+    y: center.y + Math.sin(startAngle + delta) * radius,
+  };
+
   return (
-    <path
-      d={`M ${center.x + radius} ${center.y} A ${radius} ${radius} 0 0 0 ${center.x + radius * 0.7} ${center.y - radius * 0.7}`}
-      {...styleFor(object, selected)}
-    />
+    <g>
+      <line x1={center.x} y1={center.y} x2={arcStart.x} y2={arcStart.y} {...styleFor(object, selected)} />
+      <line x1={center.x} y1={center.y} x2={arcEnd.x} y2={arcEnd.y} {...styleFor(object, selected)} />
+      <path
+        d={`M ${arcStart.x} ${arcStart.y} A ${radius} ${radius} 0 0 ${delta >= 0 ? 1 : 0} ${arcEnd.x} ${arcEnd.y}`}
+        {...styleFor(object, selected)}
+      />
+    </g>
   );
 }
 
@@ -378,6 +436,10 @@ function coordinateLabels(
 }
 
 function pointsBounds(points: PointCoordinate[], padding = 0): ObjectBounds {
+  if (points.length === 0) {
+    return { minX: -0.5, maxX: 0.5, minY: -0.5, maxY: 0.5 };
+  }
+
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   return {
@@ -407,6 +469,8 @@ function objectBounds(object: DiagramObject): ObjectBounds {
         maxY: object.center.y + object.radius,
       };
     case "Polygon":
+      return pointsBounds(object.points);
+    case "PenPath":
       return pointsBounds(object.points, 0.08);
     case "Angle":
       return pointsBounds([object.start, object.vertex, object.end], 0.08);
@@ -430,93 +494,46 @@ function normalizedBounds(start: PointCoordinate, end: PointCoordinate): ObjectB
   };
 }
 
-function translatePoint(point: PointCoordinate, dx: number, dy: number): PointCoordinate {
-  return {
-    x: Number((point.x + dx).toFixed(3)),
-    y: Number((point.y + dy).toFixed(3)),
-  };
+function unionBounds(bounds: ObjectBounds[]): ObjectBounds | null {
+  if (bounds.length === 0) return null;
+
+  return bounds.reduce<ObjectBounds>(
+    (accumulator, item) => ({
+      minX: Math.min(accumulator.minX, item.minX),
+      maxX: Math.max(accumulator.maxX, item.maxX),
+      minY: Math.min(accumulator.minY, item.minY),
+      maxY: Math.max(accumulator.maxY, item.maxY),
+    }),
+    bounds[0],
+  );
 }
 
-function translateObject(object: DiagramObject, dx: number, dy: number): DiagramObject {
-  switch (object.type) {
-    case "Point":
-      return { ...object, coordinates: translatePoint(object.coordinates, dx, dy) };
-    case "Segment":
-    case "Vector":
-      return { ...object, start: translatePoint(object.start, dx, dy), end: translatePoint(object.end, dx, dy) };
-    case "Line":
-      return { ...object, through: [translatePoint(object.through[0], dx, dy), translatePoint(object.through[1], dx, dy)] };
-    case "Circle":
-      return { ...object, center: translatePoint(object.center, dx, dy) };
-    case "Polygon":
-      return { ...object, points: object.points.map((point) => translatePoint(point, dx, dy)) };
-    case "Angle":
-      return {
-        ...object,
-        start: translatePoint(object.start, dx, dy),
-        vertex: translatePoint(object.vertex, dx, dy),
-        end: translatePoint(object.end, dx, dy),
-      };
-    case "Label":
-      return { ...object, position: translatePoint(object.position, dx, dy) };
-    case "FunctionPlot":
-      return {
-        ...object,
-        domain: [object.domain[0] + dx, object.domain[1] + dx],
-        samples: object.samples.map((point) => translatePoint(point, dx, dy)),
-      };
-  }
+function viewportForBounds(bounds: ObjectBounds, canvas: CanvasSize): DiagramViewport {
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  const baseRangeX = Math.max(bounds.maxX - bounds.minX, 0.8);
+  const baseRangeY = Math.max(bounds.maxY - bounds.minY, 0.8);
+  const padding = 1.24;
+
+  return fitViewportToCanvas(
+    {
+      minX: centerX - (baseRangeX * padding) / 2,
+      maxX: centerX + (baseRangeX * padding) / 2,
+      minY: centerY - (baseRangeY * padding) / 2,
+      maxY: centerY + (baseRangeY * padding) / 2,
+    },
+    canvas,
+  );
 }
 
-function updateObjectHandle(object: DiagramObject, handle: string, point: PointCoordinate): DiagramObject {
-  const nextPoint = { x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) };
-
-  if (handle.startsWith("bounds-")) {
-    const bounds = objectBounds(object);
-    const next = { ...bounds };
-    const direction = handle.replace("bounds-", "");
-
-    if (direction.includes("w")) next.minX = nextPoint.x;
-    if (direction.includes("e")) next.maxX = nextPoint.x;
-    if (direction.includes("s")) next.minY = nextPoint.y;
-    if (direction.includes("n")) next.maxY = nextPoint.y;
-
-    return resizeObjectToBounds(object, next);
-  }
-
-  switch (object.type) {
-    case "Point":
-      return { ...object, coordinates: nextPoint };
-    case "Segment":
-    case "Vector":
-      return handle === "start" ? { ...object, start: nextPoint } : { ...object, end: nextPoint };
-    case "Line":
-      return handle === "through-0"
-        ? { ...object, through: [nextPoint, object.through[1]] }
-        : { ...object, through: [object.through[0], nextPoint] };
-    case "Circle":
-      if (handle === "center") return { ...object, center: nextPoint };
-      return {
-        ...object,
-        radius: Number(Math.max(0.05, Math.hypot(nextPoint.x - object.center.x, nextPoint.y - object.center.y)).toFixed(3)),
-      };
-    case "Polygon": {
-      const index = Number(handle.replace("vertex-", ""));
-      return {
-        ...object,
-        points: object.points.map((item, itemIndex) => (itemIndex === index ? nextPoint : item)),
-      };
-    }
-    case "Angle":
-      if (handle === "start") return { ...object, start: nextPoint };
-      if (handle === "vertex") return { ...object, vertex: nextPoint };
-      return { ...object, end: nextPoint };
-    case "Label":
-      return { ...object, position: nextPoint };
-    case "FunctionPlot":
-      return object;
-  }
+function viewportForObjects(objects: DiagramObject[], canvas: CanvasSize): DiagramViewport | null {
+  const bounds = unionBounds(objects.filter((object) => object.visibility).map(objectBounds));
+  return bounds ? viewportForBounds(bounds, canvas) : null;
 }
+
+// translatePoint and translateObject imported from diagram-geometry.ts
+
+// updateObjectHandle imported from diagram-geometry.ts
 
 function boundsHandlesForObject(object: DiagramObject): { id: string; point: PointCoordinate; cursor: string }[] {
   if (object.type === "Point" || object.type === "Label") return [];
@@ -534,6 +551,33 @@ function boundsHandlesForObject(object: DiagramObject): { id: string; point: Poi
     { id: "bounds-sw", point: { x: bounds.minX, y: bounds.minY }, cursor: "cursor-nesw-resize" },
     { id: "bounds-w", point: { x: bounds.minX, y: (bounds.minY + bounds.maxY) / 2 }, cursor: "cursor-ew-resize" },
   ];
+}
+
+function centerOfBounds(bounds: ObjectBounds): PointCoordinate {
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2,
+  };
+}
+
+function angleFromCenter(point: PointCoordinate, center: PointCoordinate): number {
+  return Math.atan2(point.y - center.y, point.x - center.x);
+}
+
+function rotateHandleForObject(object: DiagramObject): { id: string; point: PointCoordinate; cursor: string } | null {
+  if (object.type === "Point" || object.type === "Label") return null;
+
+  const bounds = objectBounds(object);
+  if (Math.abs(bounds.maxX - bounds.minX) < 0.001 && Math.abs(bounds.maxY - bounds.minY) < 0.001) return null;
+
+  const height = bounds.maxY - bounds.minY;
+  const offset = Math.max(height * 0.18, 0.45);
+
+  return {
+    id: "rotate",
+    point: { x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY + offset },
+    cursor: "cursor-grab",
+  };
 }
 
 function objectHandlesForObject(object: DiagramObject): { id: string; point: PointCoordinate; cursor: string }[] {
@@ -558,11 +602,18 @@ function objectHandlesForObject(object: DiagramObject): { id: string; point: Poi
       ];
     case "Polygon":
       return object.points.map((point, index) => ({ id: `vertex-${index}`, point, cursor: "cursor-move" }));
+    case "PenPath": {
+      const stride = Math.max(1, Math.ceil(object.points.length / 24));
+      return object.points
+        .map((point, index) => ({ id: `pen-${index}`, point, cursor: "cursor-move" }))
+        .filter((_, index) => index === 0 || index === object.points.length - 1 || index % stride === 0);
+    }
     case "Angle":
       return [
         { id: "start", point: object.start, cursor: "cursor-move" },
         { id: "vertex", point: object.vertex, cursor: "cursor-move" },
         { id: "end", point: object.end, cursor: "cursor-move" },
+        { id: "radius", point: angleRadiusHandlePoint(object), cursor: "cursor-grab" },
       ];
     case "Label":
       return [{ id: "position", point: object.position, cursor: "cursor-move" }];
@@ -572,7 +623,39 @@ function objectHandlesForObject(object: DiagramObject): { id: string; point: Poi
 }
 
 function handlesForObject(object: DiagramObject): { id: string; point: PointCoordinate; cursor: string }[] {
-  return [...objectHandlesForObject(object), ...boundsHandlesForObject(object)];
+  const rotateHandle = rotateHandleForObject(object);
+  return [
+    ...objectHandlesForObject(object),
+    ...boundsHandlesForObject(object),
+    ...(rotateHandle ? [rotateHandle] : []),
+  ];
+}
+
+function renderRotateHandleStem(
+  object: DiagramObject,
+  diagram: DiagramModel,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
+  const rotateHandle = rotateHandleForObject(object);
+  if (!rotateHandle) return null;
+
+  const bounds = objectBounds(object);
+  const framePoint = toSvg({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY }, diagram, canvas);
+  const handlePoint = toSvg(rotateHandle.point, diagram, canvas);
+
+  return (
+    <line
+      key={`${object.id}-rotate-stem`}
+      x1={framePoint.x}
+      y1={framePoint.y}
+      x2={handlePoint.x}
+      y2={handlePoint.y}
+      stroke="#111111"
+      strokeDasharray="4 4"
+      strokeWidth="1.2"
+      pointerEvents="none"
+    />
+  );
 }
 
 function renderSelectionFrame(
@@ -622,6 +705,29 @@ function renderCursorReadout(
         y={y + 15}
         className="select-none fill-black font-mono text-[11px]"
       >
+        {label}
+      </text>
+    </g>
+  );
+}
+
+function renderRotationReadout(
+  state: Extract<DragState, { kind: "rotate" }> | null,
+  cursor: CursorPosition | null,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
+  if (!state || !cursor) return null;
+
+  const label = formatDegrees(state.angleDelta);
+  const boxWidth = Math.max(58, label.length * 7 + 18);
+  const boxHeight = 22;
+  const x = Math.max(8, Math.min(canvas.width - boxWidth - 8, cursor.svg.x + 12));
+  const y = Math.max(8, Math.min(canvas.height - boxHeight - 8, cursor.svg.y + 12));
+
+  return (
+    <g data-testid="rotation-degree" pointerEvents="none">
+      <rect x={x} y={y} width={boxWidth} height={boxHeight} fill="#111111" stroke="#111111" strokeWidth="1.5" />
+      <text x={x + 9} y={y + 15} className="select-none fill-white font-mono text-[11px]">
         {label}
       </text>
     </g>
@@ -740,6 +846,23 @@ function renderObject(
       });
       return <polygon key={object.id} points={points.join(" ")} {...shared} {...styleFor(object, selected)} />;
     }
+    case "PenPath": {
+      const points = object.points.map((point) => {
+        const svg = toSvg(point, diagram, canvas);
+        return `${svg.x},${svg.y}`;
+      });
+      return (
+        <polyline
+          key={object.id}
+          points={points.join(" ")}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          {...shared}
+          {...styleFor(object, selected)}
+          fill="none"
+        />
+      );
+    }
     case "Angle":
       return (
         <g key={object.id} {...shared}>
@@ -754,14 +877,16 @@ function renderObject(
         </g>
       );
     case "FunctionPlot": {
-      const points = object.samples.map((sample) => {
+      const samples = object.samples;
+      const points = samples.map((sample) => {
         const svg = toSvg(sample, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
+      if (points.length < 2) return null;
       return (
         <g key={object.id} {...shared}>
           <polyline points={points.join(" ")} {...styleFor(object, selected)} />
-          {renderLabel(object, object.samples[object.samples.length - 2] ?? object.samples[0], diagram, canvas)}
+          {renderLabel(object, samples[samples.length - 2] ?? samples[0], diagram, canvas)}
         </g>
       );
     }
@@ -833,6 +958,22 @@ function renderObjectHitArea(
       });
       return <polygon key={`${object.id}-hit`} points={points.join(" ")} pointerEvents="all" {...shared} />;
     }
+    case "PenPath": {
+      const points = object.points.map((point) => {
+        const svg = toSvg(point, diagram, canvas);
+        return `${svg.x},${svg.y}`;
+      });
+      return (
+        <polyline
+          key={`${object.id}-hit`}
+          points={points.join(" ")}
+          strokeWidth="18"
+          strokeLinecap="round"
+          pointerEvents="stroke"
+          {...shared}
+        />
+      );
+    }
     case "Angle": {
       const bounds = objectBounds(object);
       const topLeft = toSvg({ x: bounds.minX, y: bounds.maxY }, diagram, canvas);
@@ -864,10 +1005,12 @@ function renderObjectHitArea(
       );
     }
     case "FunctionPlot": {
-      const points = object.samples.map((sample) => {
+      const samples = object.samples;
+      const points = samples.map((sample) => {
         const svg = toSvg(sample, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
+      if (points.length < 2) return null;
       return <polyline key={`${object.id}-hit`} points={points.join(" ")} strokeWidth="18" strokeLinecap="round" {...shared} />;
     }
   }
@@ -878,6 +1021,7 @@ export function DiagramCanvasFallback({
   selectedObjectIds = [],
   activeTool = "select",
   pendingPoints = [],
+  activePenPathId = null,
   coordinatesVisible = true,
   onSelectObjects,
   onCanvasPoint,
@@ -895,9 +1039,13 @@ export function DiagramCanvasFallback({
     () => fitViewportToCanvas(diagram.viewport, canvasSize),
     [canvasSize, diagram.viewport],
   );
+  const sampledObjects = useMemo(
+    () => diagram.objects.map((object) => (object.type === "FunctionPlot" ? materializeFunctionPlot(object, fittedViewport) : object)),
+    [diagram.objects, fittedViewport],
+  );
   const visibleDiagram = useMemo(
-    () => ({ ...diagram, viewport: fittedViewport }),
-    [diagram, fittedViewport],
+    () => ({ ...diagram, objects: sampledObjects, viewport: fittedViewport }),
+    [diagram, sampledObjects, fittedViewport],
   );
   const displayDiagram = dragDiagram ?? visibleDiagram;
   const selectedSet = useMemo(() => new Set(selectedObjectIds), [selectedObjectIds]);
@@ -999,6 +1147,22 @@ export function DiagramCanvasFallback({
     });
   }
 
+  function beginRotateDrag(event: PointerEvent<SVGSVGElement>, objectId: string) {
+    const object = visibleDiagram.objects.find((item) => item.id === objectId);
+    if (!object) return;
+
+    const center = centerOfBounds(objectBounds(object));
+    onSelectObjects?.([objectId]);
+    setDragState({
+      kind: "rotate",
+      objectId,
+      startDiagram: visibleDiagram,
+      center,
+      startAngle: angleFromCenter(fromSvg(svgPointFromEvent(event), visibleDiagram, canvasSize), center),
+      angleDelta: 0,
+    });
+  }
+
   function previewCreatedObject(state: Extract<DragState, { kind: "create" }>): DiagramObject | null {
     const start = fromSvg(state.startSvg, state.startDiagram, canvasSize);
     const current = fromSvg(state.currentSvg, state.startDiagram, canvasSize);
@@ -1018,6 +1182,122 @@ export function DiagramCanvasFallback({
     } as DiagramObject;
   }
 
+  function renderPinnedPenPreview(canvas: CanvasSize = defaultCanvasSize): React.ReactNode {
+    if (activeTool !== "pen" || !cursorPosition) return null;
+
+    const selectedPenPath = activePenPathId
+      ? displayDiagram.objects.find((object) => object.id === activePenPathId && object.type === "PenPath")
+      : null;
+    const basePoints = pendingPoints.length > 0
+      ? pendingPoints
+      : selectedPenPath?.type === "PenPath"
+        ? selectedPenPath.points
+        : [];
+
+    if (basePoints.length === 0) return null;
+
+    const points = [...basePoints, cursorPosition.point].map((point) => {
+      const svg = toSvg(point, displayDiagram, canvas);
+      return `${svg.x},${svg.y}`;
+    });
+
+    if (points.length < 2) return null;
+
+    return (
+      <g pointerEvents="none">
+        <polyline
+          points={points.join(" ")}
+          fill="none"
+          stroke="#111111"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity="0.86"
+        />
+        {basePoints.map((point, index) => {
+          const svg = toSvg(point, displayDiagram, canvas);
+          return (
+            <rect
+              key={`${point.x}-${point.y}-${index}-pen-pin`}
+              x={svg.x - 4}
+              y={svg.y - 4}
+              width="8"
+              height="8"
+              fill="#ffffff"
+              stroke="#111111"
+              strokeWidth="1.5"
+            />
+          );
+        })}
+      </g>
+    );
+  }
+
+  function renderAngleToolPreview(canvas: CanvasSize = defaultCanvasSize): React.ReactNode {
+    if (activeTool !== "angle" || !cursorPosition || pendingPoints.length === 0) return null;
+
+    const previewStyle = {
+      stroke: "#111111",
+      strokeWidth: 1.4,
+      dashed: true,
+      opacity: 0.74,
+      labelPosition: "above-right" as const,
+    };
+
+    const pointMarks = [...pendingPoints, cursorPosition.point].map((point, index) => {
+      const svg = toSvg(point, displayDiagram, canvas);
+      return (
+        <g key={`${point.x}-${point.y}-${index}-angle-preview-point`}>
+          <circle cx={svg.x} cy={svg.y} r="6" fill="#ffffff" stroke="#111111" strokeWidth="2" />
+          <text x={svg.x + 9} y={svg.y - 8} className="pointer-events-none select-none fill-black font-mono text-[10px]">
+            {index === 0 ? "ray" : index === 1 ? "vertex" : "ray"}
+          </text>
+        </g>
+      );
+    });
+
+    if (pendingPoints.length === 1) {
+      const start = toSvg(pendingPoints[0], displayDiagram, canvas);
+      const current = toSvg(cursorPosition.point, displayDiagram, canvas);
+      return (
+        <g pointerEvents="none">
+          <line
+            x1={start.x}
+            y1={start.y}
+            x2={current.x}
+            y2={current.y}
+            stroke="#111111"
+            strokeWidth="1.4"
+            strokeDasharray="5 4"
+            opacity="0.74"
+          />
+          {pointMarks}
+        </g>
+      );
+    }
+
+    const previewAngle = {
+      id: "angle-preview",
+      name: "Angle preview",
+      type: "Angle",
+      label: "",
+      visibility: true,
+      start: pendingPoints[0],
+      vertex: pendingPoints[1],
+      end: cursorPosition.point,
+      radius: 0.55,
+      semanticRole: "theorem-label",
+      style: previewStyle,
+    } satisfies Extract<DiagramObject, { type: "Angle" }>;
+
+    return (
+      <g pointerEvents="none">
+        {renderAngle(previewAngle, displayDiagram, true, canvas)}
+        {pointMarks}
+      </g>
+    );
+  }
+
   function targetAttribute(event: PointerEvent<SVGSVGElement>, selector: string, attribute: string): string | null {
     if (!(event.target instanceof Element)) return null;
     return event.target.closest(selector)?.getAttribute(attribute) ?? null;
@@ -1031,7 +1311,12 @@ export function DiagramCanvasFallback({
 
     const handleId = targetAttribute(event, "[data-handle-id]", "data-handle-id");
     const handleObjectId = targetAttribute(event, "[data-handle-object-id]", "data-handle-object-id");
-    if (event.button === 0 && handleId && handleObjectId) {
+    if (event.button === 0 && activeTool === "select" && handleId && handleObjectId) {
+      if (handleId === "rotate") {
+        beginRotateDrag(event, handleObjectId);
+        return;
+      }
+
       beginHandleDrag(handleObjectId, handleId);
       return;
     }
@@ -1110,6 +1395,25 @@ export function DiagramCanvasFallback({
       return;
     }
 
+    if (dragState.kind === "rotate") {
+      const current = fromSvg(svgPoint, dragState.startDiagram, canvasSize);
+      const angleDelta = angleFromCenter(current, dragState.center) - dragState.startAngle;
+
+      setDragState({ ...dragState, angleDelta });
+      setDragDiagram(
+        syncLinkedDiagram(
+          diagramWithObjects(
+            dragState.startDiagram,
+            dragState.startDiagram.objects.map((object) =>
+              object.id === dragState.objectId ? rotateObject(object, dragState.center, angleDelta) : object,
+            ),
+          ),
+          dragState.startDiagram,
+        ),
+      );
+      return;
+    }
+
     if (dragState.kind === "move") {
       const current = fromSvg(svgPoint, dragState.startDiagram, canvasSize);
       const dx = current.x - dragState.startPoint.x;
@@ -1118,9 +1422,12 @@ export function DiagramCanvasFallback({
 
       const ids = new Set(dragState.objectIds);
       setDragDiagram(
-        diagramWithObjects(
+        syncLinkedDiagram(
+          diagramWithObjects(
+            dragState.startDiagram,
+            dragState.startDiagram.objects.map((object) => (ids.has(object.id) ? translateObject(object, dx, dy) : object)),
+          ),
           dragState.startDiagram,
-          dragState.startDiagram.objects.map((object) => (ids.has(object.id) ? translateObject(object, dx, dy) : object)),
         ),
       );
       return;
@@ -1128,11 +1435,14 @@ export function DiagramCanvasFallback({
 
     const current = fromSvg(svgPoint, dragState.startDiagram, canvasSize);
     setDragDiagram(
-      diagramWithObjects(
-        dragState.startDiagram,
-        dragState.startDiagram.objects.map((object) =>
-          object.id === dragState.objectId ? updateObjectHandle(object, dragState.handle, current) : object,
+      syncLinkedDiagram(
+        diagramWithObjects(
+          dragState.startDiagram,
+          dragState.startDiagram.objects.map((object) =>
+            object.id === dragState.objectId ? updateObjectHandle(object, dragState.handle, current) : object,
+          ),
         ),
+        dragState.startDiagram,
       ),
     );
   }
@@ -1211,8 +1521,15 @@ export function DiagramCanvasFallback({
     onViewportChange?.({ minX: -5, maxX: 5, minY: -3.5, maxY: 3.5 });
   }
 
+  function fitObjectsViewport() {
+    onViewportChange?.(viewportForObjects(displayDiagram.objects, canvasSize) ?? { minX: -5, maxX: 5, minY: -3.5, maxY: 3.5 });
+  }
+
   const marquee = dragState?.kind === "marquee" ? dragState : null;
+  const rotationState = dragState?.kind === "rotate" ? dragState : null;
   const previewObject = dragState?.kind === "create" ? previewCreatedObject(dragState) : null;
+  const penPreview = renderPinnedPenPreview(canvasSize);
+  const anglePreview = renderAngleToolPreview(canvasSize);
   const marqueeRect = marquee
     ? {
         x: Math.min(marquee.startSvg.x, marquee.currentSvg.x),
@@ -1263,9 +1580,14 @@ export function DiagramCanvasFallback({
         {coordinateLabels(displayDiagram, coordinatesVisible, canvasSize)}
         {displayDiagram.objects.map((object) => renderObject(object, displayDiagram, selectedSet.has(object.id), canvasSize))}
         {previewObject ? renderObject(previewObject, displayDiagram, true, canvasSize) : null}
+        {penPreview}
+        {anglePreview}
         {displayDiagram.objects.map((object) => renderObjectHitArea(object, displayDiagram, canvasSize))}
         {displayDiagram.objects.map((object) =>
           selectedSet.has(object.id) ? renderSelectionFrame(object, displayDiagram, canvasSize) : null,
+        )}
+        {displayDiagram.objects.map((object) =>
+          selectedSet.has(object.id) ? renderRotateHandleStem(object, displayDiagram, canvasSize) : null,
         )}
         {displayDiagram.objects.map((object) =>
           selectedSet.has(object.id)
@@ -1276,10 +1598,10 @@ export function DiagramCanvasFallback({
                     key={`${object.id}-${handle.id}`}
                     cx={point.x}
                     cy={point.y}
-                    r="6"
-                    fill="#ffffff"
+                    r={handle.id === "rotate" ? "7" : "6"}
+                    fill={handle.id === "rotate" ? "#111111" : "#ffffff"}
                     stroke="#111111"
-                    strokeWidth="2"
+                    strokeWidth={handle.id === "rotate" ? "1.5" : "2"}
                     data-handle-id={handle.id}
                     data-handle-object-id={object.id}
                     className={handle.cursor}
@@ -1310,6 +1632,7 @@ export function DiagramCanvasFallback({
             strokeWidth="1.5"
           />
         ) : null}
+        {renderRotationReadout(rotationState, cursorPosition, canvasSize)}
         {coordinatesVisible ? renderCursorReadout(cursorPosition, canvasSize) : null}
       </svg>
 
@@ -1319,6 +1642,9 @@ export function DiagramCanvasFallback({
         </button>
         <button type="button" onClick={() => zoomFromCenter(1.22)} title="Zoom out" aria-label="Zoom out" className="mini-icon-button">
           <ZoomOut className="h-4 w-4" aria-hidden />
+        </button>
+        <button type="button" onClick={fitObjectsViewport} title="Fit objects" aria-label="Fit objects" className="mini-icon-button">
+          <Focus className="h-4 w-4" aria-hidden />
         </button>
         <button type="button" onClick={resetViewport} title="Reset view" aria-label="Reset view" className="mini-icon-button">
           <Maximize2 className="h-4 w-4" aria-hidden />

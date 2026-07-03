@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBlankDiagram, createObjectFromDrag, createObjectFromTool, snapPoint } from "@/lib/diagram-editor";
+import { createBlankDiagram, createObjectFromDrag, createObjectFromTool, createPenPath, snapPoint } from "@/lib/diagram-editor";
 
 describe("diagram editor helpers", () => {
   it("creates a blank editable figure with a visible grid", () => {
@@ -24,6 +24,20 @@ describe("diagram editor helpers", () => {
       type: "Segment",
       start: { x: 0, y: 0 },
       end: { x: 2, y: 1 },
+    });
+  });
+
+  it("creates a line after two canvas clicks", () => {
+    const start = createObjectFromTool("line", { x: -1, y: -1 }, [], [], "");
+    const end = createObjectFromTool("line", { x: 2, y: 2 }, start.pendingPoints, [], "");
+
+    expect(start.object).toBeNull();
+    expect(end.object).toMatchObject({
+      type: "Line",
+      through: [
+        { x: -1, y: -1 },
+        { x: 2, y: 2 },
+      ],
     });
   });
 
@@ -67,10 +81,18 @@ describe("diagram editor helpers", () => {
   });
 
   it("creates resizable drawing objects from a single drag", () => {
+    const line = createObjectFromDrag("line", { x: -1, y: -1 }, { x: 2, y: 2 }, [], "");
     const rectangle = createObjectFromDrag("rectangle", { x: 2, y: 2 }, { x: -1, y: 0 }, [], "");
     const triangle = createObjectFromDrag("triangle", { x: 0, y: 0 }, { x: 2, y: 1.5 }, [], "");
     const angle = createObjectFromDrag("angle", { x: 0, y: 0 }, { x: 2, y: 1 }, [], "");
 
+    expect(line).toMatchObject({
+      type: "Line",
+      through: [
+        { x: -1, y: -1 },
+        { x: 2, y: 2 },
+      ],
+    });
     expect(rectangle).toMatchObject({
       type: "Polygon",
       points: [
@@ -93,6 +115,32 @@ describe("diagram editor helpers", () => {
       start: { x: 2, y: 0 },
       vertex: { x: 0, y: 0 },
       end: { x: 0, y: 1 },
+    });
+  });
+
+  it("creates a pinned pen path from anchor points", () => {
+    const pointAnchor = { kind: "point" as const, objectId: "A" };
+    const penPath = createPenPath(
+      [
+        { x: 0, y: 0 },
+        { x: 0.01, y: 0.01 },
+        { x: 0.5, y: 0.25 },
+        { x: 1, y: 0 },
+      ],
+      [],
+      "",
+      [pointAnchor, null, null, null],
+    );
+
+    expect(penPath).toMatchObject({
+      type: "PenPath",
+      anchors: [pointAnchor, null, null],
+      points: [
+        { x: 0, y: 0 },
+        { x: 0.5, y: 0.25 },
+        { x: 1, y: 0 },
+      ],
+      style: { stroke: "#111111", fill: "transparent" },
     });
   });
 });

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { KeyRound, Mail, UserPlus } from "lucide-react";
+import { KeyRound, Mail, UserRound, UserPlus } from "lucide-react";
 import { getSupabaseClient } from "@/lib/supabase/client";
 
 export interface StudioSession {
   email: string;
+  isGuest?: boolean;
   signOut: () => Promise<void> | void;
 }
 
@@ -14,27 +15,46 @@ interface AccessGateProps {
 }
 
 const localSessionKey = "geotex-studio-local-session";
+const guestSessionValue = "Guest";
 
 export function AccessGate({ children }: AccessGateProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [sessionEmail, setSessionEmail] = useState<string | null>(() =>
-    typeof window === "undefined" ? null : window.localStorage.getItem(localSessionKey),
-  );
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    const restoreLocalSession = () => {
+      if (cancelled) return;
+      const localSession = window.localStorage.getItem(localSessionKey);
+      if (localSession) setSessionEmail(localSession);
+    };
+
+    window.queueMicrotask(restoreLocalSession);
+
     const client = getSupabaseClient();
 
-    if (!client) return;
+    if (!client) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
-    client.auth.getUser().then(({ data }) => setSessionEmail(data.user?.email ?? null));
+    client.auth.getUser().then(({ data }) => {
+      if (cancelled) return;
+      setSessionEmail(data.user?.email ?? window.localStorage.getItem(localSessionKey));
+    });
     const { data: listener } = client.auth.onAuthStateChange((_event, session) => {
-      setSessionEmail(session?.user.email ?? null);
+      if (cancelled) return;
+      setSessionEmail(session?.user.email ?? window.localStorage.getItem(localSessionKey));
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   async function signOut() {
@@ -44,6 +64,12 @@ export function AccessGate({ children }: AccessGateProps) {
     }
     window.localStorage.removeItem(localSessionKey);
     setSessionEmail(null);
+  }
+
+  function continueAsGuest() {
+    window.localStorage.setItem(localSessionKey, guestSessionValue);
+    setSessionEmail(guestSessionValue);
+    setMessage("");
   }
 
   async function submit() {
@@ -86,7 +112,7 @@ export function AccessGate({ children }: AccessGateProps) {
   }
 
   if (sessionEmail) {
-    return children({ email: sessionEmail, signOut });
+    return children({ email: sessionEmail, isGuest: sessionEmail === guestSessionValue, signOut });
   }
 
   return (
@@ -161,6 +187,11 @@ export function AccessGate({ children }: AccessGateProps) {
             Email link
           </button>
         </div>
+
+        <button type="button" onClick={continueAsGuest} className="icon-button-secondary h-11 w-full">
+          <UserRound className="h-4 w-4" aria-hidden />
+          Continue as Guest
+        </button>
 
         {message ? <p className="text-sm font-medium text-stone-600">{message}</p> : null}
       </form>

@@ -14,8 +14,15 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GeoTeX Studio",
-  description: "Figures built for TeX.",
+  title: "GeoTeX Studio — Academic Figure Editor for LaTeX/TikZ",
+  description:
+    "Create, edit, and export publication-ready mathematical and physics diagrams to clean LaTeX/TikZ code. Built for papers, theses, lecture notes, and olympiad solutions.",
+  keywords: ["LaTeX", "TikZ", "GeoGebra", "diagram editor", "academic figures", "mathematics", "physics"],
+  openGraph: {
+    title: "GeoTeX Studio",
+    description: "Figures built for TeX. A web-based academic figure editor with semantic TikZ export.",
+    type: "website",
+  },
 };
 
 export default function RootLayout({

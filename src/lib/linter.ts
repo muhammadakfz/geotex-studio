@@ -37,7 +37,7 @@ function isNeutralColor(color?: string): boolean {
     return true;
   }
 
-  const normalized = color.toLowerCase();
+  const normalized = String(color).toLowerCase();
   if (["black", "white", "gray", "grey"].some((name) => normalized.includes(name))) {
     return true;
   }
@@ -77,6 +77,8 @@ function objectAnchor(object: DiagramObject): PointCoordinate | undefined {
       return object.through[0];
     case "Polygon":
       return object.points[0];
+    case "PenPath":
+      return object.points[Math.floor(object.points.length / 2)];
   }
 }
 
@@ -121,7 +123,7 @@ function lintPointSizes(diagram: DiagramModel, findings: LintFinding[]): void {
 
 function lintLineWidths(diagram: DiagramModel, findings: LintFinding[]): void {
   const widths = diagram.objects
-    .filter((object) => ["Segment", "Line", "Circle", "Vector", "Polygon", "FunctionPlot"].includes(object.type))
+    .filter((object) => ["Segment", "Line", "Circle", "Vector", "Polygon", "PenPath", "FunctionPlot"].includes(object.type))
     .map((object) => object.style.strokeWidth ?? 1);
 
   if (widths.length > 2 && Math.max(...widths) - Math.min(...widths) > 1.1) {

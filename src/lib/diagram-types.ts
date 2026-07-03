@@ -7,7 +7,8 @@ export type DiagramObjectType =
   | "Angle"
   | "Label"
   | "FunctionPlot"
-  | "Polygon";
+  | "Polygon"
+  | "PenPath";
 
 export type DiagramKind = "geometry" | "physics" | "calculus" | "custom";
 
@@ -39,6 +40,14 @@ export type LabelPosition =
 export interface PointCoordinate {
   x: number;
   y: number;
+}
+
+export type GeometryAnchorKind = "point" | "polygon-vertex";
+
+export interface GeometryAnchor {
+  kind: GeometryAnchorKind;
+  objectId: string;
+  vertexIndex?: number;
 }
 
 export interface DiagramStyle {
@@ -74,12 +83,15 @@ export interface SegmentObject extends BaseDiagramObject {
   end: PointCoordinate;
   startPointId?: string;
   endPointId?: string;
+  startAnchor?: GeometryAnchor;
+  endAnchor?: GeometryAnchor;
 }
 
 export interface LineObject extends BaseDiagramObject {
   type: "Line";
   through: [PointCoordinate, PointCoordinate];
   pointIds?: [string, string];
+  anchors?: [GeometryAnchor | null, GeometryAnchor | null];
 }
 
 export interface CircleObject extends BaseDiagramObject {
@@ -95,6 +107,8 @@ export interface VectorObject extends BaseDiagramObject {
   end: PointCoordinate;
   startPointId?: string;
   endPointId?: string;
+  startAnchor?: GeometryAnchor;
+  endAnchor?: GeometryAnchor;
 }
 
 export interface AngleObject extends BaseDiagramObject {
@@ -103,6 +117,9 @@ export interface AngleObject extends BaseDiagramObject {
   vertex: PointCoordinate;
   end: PointCoordinate;
   pointIds?: [string, string, string];
+  anchors?: [GeometryAnchor | null, GeometryAnchor | null, GeometryAnchor | null];
+  attachedObjectId?: string;
+  attachedVertexIndex?: number;
   radius: number;
 }
 
@@ -125,6 +142,13 @@ export interface PolygonObject extends BaseDiagramObject {
   pointIds?: string[];
 }
 
+export interface PenPathObject extends BaseDiagramObject {
+  type: "PenPath";
+  points: PointCoordinate[];
+  anchors?: (GeometryAnchor | null)[];
+  smooth?: boolean;
+}
+
 export type DiagramObject =
   | PointObject
   | SegmentObject
@@ -134,7 +158,8 @@ export type DiagramObject =
   | AngleObject
   | LabelObject
   | FunctionPlotObject
-  | PolygonObject;
+  | PolygonObject
+  | PenPathObject;
 
 export interface DiagramViewport {
   minX: number;

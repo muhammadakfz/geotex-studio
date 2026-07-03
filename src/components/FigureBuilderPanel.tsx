@@ -1,15 +1,17 @@
 "use client";
 
+import { useState } from "react";
 import {
   Circle,
   Crosshair,
+  DraftingCompass,
   Grid2X2,
   Hand,
   Hash,
-  Hexagon,
+  Minus,
   MousePointer2,
   MoveUpRight,
-  Slash,
+  Pencil,
   Square,
   Trash2,
   Triangle,
@@ -17,6 +19,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { EditorTool } from "@/lib/diagram-editor";
+
+type ToolOption = { id: EditorTool; label: string; shortcut: string; icon: LucideIcon };
 
 interface FigureBuilderPanelProps {
   activeTool: EditorTool;
@@ -36,14 +40,22 @@ const tools = [
   { id: "select", label: "Select", shortcut: "V", icon: MousePointer2 },
   { id: "hand", label: "Pan", shortcut: "H", icon: Hand },
   { id: "point", label: "Point", shortcut: "P", icon: Crosshair },
-  { id: "segment", label: "Segment", shortcut: "S", icon: Slash },
+  { id: "pen", label: "Pen", shortcut: "B", icon: Pencil },
+  { id: "angle", label: "Angle", shortcut: "Q", icon: DraftingCompass },
+  { id: "label", label: "Label", shortcut: "L", icon: Type },
+] satisfies ToolOption[];
+
+const shapeTools = [
   { id: "circle", label: "Circle", shortcut: "C", icon: Circle },
   { id: "rectangle", label: "Rectangle", shortcut: "R", icon: Square },
   { id: "triangle", label: "Triangle", shortcut: "T", icon: Triangle },
-  { id: "angle", label: "Angle", shortcut: "Q", icon: Hexagon },
+] satisfies ToolOption[];
+
+const linearTools = [
+  { id: "line", label: "Line", shortcut: "S", icon: Minus },
+  { id: "segment", label: "Segment", shortcut: "N", icon: Minus },
   { id: "vector", label: "Vector", shortcut: "A", icon: MoveUpRight },
-  { id: "label", label: "Label", shortcut: "L", icon: Type },
-] satisfies { id: EditorTool; label: string; shortcut: string; icon: LucideIcon }[];
+] satisfies ToolOption[];
 
 export function FigureBuilderPanel({
   activeTool,
@@ -58,27 +70,85 @@ export function FigureBuilderPanel({
   onCoordinatesChange,
   onDeleteSelected,
 }: FigureBuilderPanelProps) {
+  const [openGroup, setOpenGroup] = useState<"shape" | "linear" | null>(null);
+
+  function selectTool(tool: EditorTool) {
+    onToolChange(tool);
+    setOpenGroup(null);
+  }
+
+  function renderToolButton(tool: ToolOption) {
+    const Icon = tool.icon;
+    return (
+      <button
+        key={tool.id}
+        type="button"
+        title={`${tool.label} (${tool.shortcut})`}
+        aria-label={tool.label}
+        onClick={() => selectTool(tool.id)}
+        className={activeTool === tool.id ? "rail-button-active" : "rail-button"}
+      >
+        <Icon className="h-5 w-5" aria-hidden />
+      </button>
+    );
+  }
+
+  function renderToolGroup(
+    group: "shape" | "linear",
+    label: string,
+    fallbackIcon: LucideIcon,
+    options: ToolOption[],
+  ) {
+    const activeOption = options.find((tool) => tool.id === activeTool);
+    const Icon = activeOption?.icon ?? fallbackIcon;
+    const active = Boolean(activeOption);
+
+    return (
+      <div className="rail-menu-wrap">
+        <button
+          type="button"
+          title={label}
+          aria-label={label}
+          aria-expanded={openGroup === group}
+          onClick={() => setOpenGroup((current) => current === group ? null : group)}
+          className={active ? "rail-button-active" : "rail-button"}
+        >
+          <Icon className="h-5 w-5" aria-hidden />
+        </button>
+        {openGroup === group ? (
+          <div className="rail-popover" role="menu" aria-label={label}>
+            {options.map((tool) => {
+              const OptionIcon = tool.icon;
+              return (
+                <button
+                  key={tool.id}
+                  type="button"
+                  onClick={() => selectTool(tool.id)}
+                  className={activeTool === tool.id ? "rail-option-active" : "rail-option"}
+                  role="menuitem"
+                >
+                  <OptionIcon className="h-4 w-4" aria-hidden />
+                  <span>{tool.label}</span>
+                  <kbd>{tool.shortcut}</kbd>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <section className="tool-rail" aria-label="Figure tools">
-      <div className="flex flex-col gap-2">
-        {tools.map((tool) => {
-          const Icon = tool.icon;
-          return (
-            <button
-              key={tool.id}
-              type="button"
-              title={`${tool.label} (${tool.shortcut})`}
-              aria-label={tool.label}
-              onClick={() => onToolChange(tool.id)}
-              className={activeTool === tool.id ? "rail-button-active" : "rail-button"}
-            >
-              <Icon className="h-5 w-5" aria-hidden />
-            </button>
-          );
-        })}
+      <div className="rail-group">
+        {tools.slice(0, 4).map(renderToolButton)}
+        {renderToolGroup("shape", "Shape tools", Square, shapeTools)}
+        {renderToolGroup("linear", "Line tools", MoveUpRight, linearTools)}
+        {tools.slice(4).map(renderToolButton)}
       </div>
 
-      <div className="mt-auto flex flex-col gap-2">
+      <div className="rail-group rail-system-group">
         <button
           type="button"
           onClick={() => onSnapChange(!snapToGrid)}

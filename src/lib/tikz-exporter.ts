@@ -4,10 +4,12 @@ import type {
   DiagramObject,
   FunctionPlotObject,
   LabelPosition,
+  PenPathObject,
   PointCoordinate,
   PointObject,
 } from "./diagram-types";
 import { normalizeLatexLabel, unwrapMathLabel, wrapMathLabel } from "./latex-normalizer";
+import { sampleFunctionPlot } from "./quick-constructs";
 
 export interface TikzExport {
   code: string;
@@ -168,16 +170,33 @@ function exportAngle(object: AngleObject, points: Map<string, PointObject>, colo
   return `  \\draw[${styleOptions(object, colors)}] ${formatPoint(object.vertex)} ++(0:${formatNumber(object.radius)}) arc (0:45:${formatNumber(object.radius)});`;
 }
 
-function exportFunctionPlot(object: FunctionPlotObject, colors: Map<string, string>): string {
-  const coordinates = object.samples.map(formatPoint).join(" ");
+function exportFunctionPlot(object: FunctionPlotObject, colors: Map<string, string>, diagram: DiagramModel): string {
+  let samples = object.samples;
+  try {
+    samples = sampleFunctionPlot(object.expression, diagram.viewport, 260).samples;
+  } catch {
+    samples = object.samples;
+  }
+  if (samples.length < 2) return `  % ${object.name}: not enough visible samples`;
+  const coordinates = samples.map(formatPoint).join(" ");
   const label = labelFor(object);
   const node = label
-    ? `\n  \\node[above right] at ${formatPoint(object.samples[object.samples.length - 2] ?? object.samples[0])} {${label}};`
+    ? `\n  \\node[above right] at ${formatPoint(samples[samples.length - 2] ?? samples[0])} {${label}};`
     : "";
   return `  \\draw[${styleOptions(object, colors)}] plot[smooth] coordinates { ${coordinates} };${node}`;
 }
 
-function exportObject(object: DiagramObject, points: Map<string, PointObject>, colors: Map<string, string>): string[] {
+function exportPenPath(object: PenPathObject, colors: Map<string, string>): string {
+  const coordinates = object.points.map(formatPoint).join(" -- ");
+  const label = labelFor(object);
+  const node = label
+    ? ` node[midway, ${tikzPosition(object.style.labelPosition)}] {${label}}`
+    : "";
+
+  return `  \\draw[${styleOptions(object, colors)}] ${coordinates}${node};`;
+}
+
+function exportObject(object: DiagramObject, diagram: DiagramModel, points: Map<string, PointObject>, colors: Map<string, string>): string[] {
   if (!object.visibility) {
     return [];
   }
@@ -204,7 +223,9 @@ function exportObject(object: DiagramObject, points: Map<string, PointObject>, c
     case "Label":
       return [`  \\node at ${formatPoint(object.position)} {${wrapMathLabel(unwrapMathLabel(object.text || object.label || ""))}};`];
     case "FunctionPlot":
-      return [exportFunctionPlot(object, colors)];
+      return [exportFunctionPlot(object, colors, diagram)];
+    case "PenPath":
+      return [exportPenPath(object, colors)];
     case "Polygon": {
       const coordinates = object.points
         .map((point, index) => {
@@ -224,7 +245,7 @@ function exportCartesian(diagram: DiagramModel): string[] {
 
   return [
     "  % Optional cartesian guide",
-    `  \\draw[help lines, step=${formatNumber(Math.min(xStep, yStep))}, gray!18] (${formatNumber(minX)},${formatNumber(minY)}) grid (${formatNumber(maxX)},${formatNumber(maxY)});`,
+    `  \\draw[step=${formatNumber(Math.min(xStep, yStep))}, line width=0.2pt] (${formatNumber(minX)},${formatNumber(minY)}) grid (${formatNumber(maxX)},${formatNumber(maxY)});`,
     `  \\draw[axis] (${formatNumber(minX)},0) -- (${formatNumber(maxX)},0);`,
     `  \\draw[axis] (0,${formatNumber(minY)}) -- (0,${formatNumber(maxY)});`,
   ];
@@ -238,7 +259,7 @@ export function exportTikz(diagram: DiagramModel, options: TikzExportOptions = {
   );
   const body = [
     ...(options.includeCartesian ? exportCartesian(diagram) : []),
-    ...diagram.objects.flatMap((object) => exportObject(object, points, colors)),
+    ...diagram.objects.flatMap((object) => exportObject(object, diagram, points, colors)),
   ];
 
   const code = [
@@ -252,13 +273,13 @@ export function exportTikz(diagram: DiagramModel, options: TikzExportOptions = {
     "\\begin{tikzpicture}[scale=1]",
     "  \\tikzset{",
     "    main line/.style={semithick},",
-    "    construction line/.style={thin, dashed},",
+    "    construction line/.style={thin},",
     "    force vector/.style={-{Stealth[length=3mm]}, thick},",
     "    vector/.style={-{Stealth[length=2.5mm]}, semithick},",
     "    axis/.style={-{Stealth[length=2mm]}, thin},",
     "    function curve/.style={semithick},",
     "    tangent line/.style={thin, dashed},",
-    "    area region/.style={fill=gray!12, draw=gray!45},",
+    "    area region/.style={draw=black},",
     "    point/.style={circle, fill, inner sep=1.5pt}",
     "  }",
     "",

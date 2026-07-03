@@ -1,13 +1,16 @@
 import katex from "katex";
-import { Clipboard, Download } from "lucide-react";
+import { Clipboard, Download, RotateCcw } from "lucide-react";
 import type { DiagramModel } from "@/lib/diagram-types";
 import { unwrapMathLabel } from "@/lib/latex-normalizer";
 
 interface TikZOutputPanelProps {
   diagram: DiagramModel;
   code: string;
+  isCustom: boolean;
   includeCartesian: boolean;
   onIncludeCartesianChange: (value: boolean) => void;
+  onCodeChange: (value: string) => void;
+  onResetCode: () => void;
   onCopy: () => void;
   onDownload: () => void;
 }
@@ -19,11 +22,11 @@ function LatexPreview({ diagram }: { diagram: DiagramModel }) {
     .slice(0, 6);
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="latex-preview">
       {labels.map((label, index) => (
         <span
           key={`${label}-${index}`}
-          className="rounded-md border border-stone-200 bg-white px-2 py-1 text-sm"
+          className="latex-chip"
           dangerouslySetInnerHTML={{
             __html: katex.renderToString(unwrapMathLabel(label), {
               throwOnError: false,
@@ -39,19 +42,22 @@ function LatexPreview({ diagram }: { diagram: DiagramModel }) {
 export function TikZOutputPanel({
   diagram,
   code,
+  isCustom,
   includeCartesian,
   onIncludeCartesianChange,
+  onCodeChange,
+  onResetCode,
   onCopy,
   onDownload,
 }: TikZOutputPanelProps) {
   return (
     <section className="tool-panel">
       <div className="panel-heading">
-        <span>TikZ Output</span>
-        <span className="status-pill">{includeCartesian ? "cartesian" : "objects only"}</span>
+        <span>LaTeX / TikZ</span>
+        <span className="status-pill">{isCustom ? "edited" : includeCartesian ? "cartesian" : "objects"}</span>
       </div>
       <LatexPreview diagram={diagram} />
-      <label className="mt-3 flex items-center justify-between gap-3 rounded-sm border border-black bg-white px-3 py-2 text-xs font-bold uppercase tracking-normal text-black">
+      <label className="pixel-toggle">
         Cartesian guide
         <input
           type="checkbox"
@@ -60,17 +66,25 @@ export function TikZOutputPanel({
           className="h-4 w-4 accent-black"
         />
       </label>
-      <pre className="mt-3 max-h-96 overflow-auto rounded-md border border-stone-200 bg-stone-950 p-4 text-xs leading-6 text-stone-100">
-        <code>{code}</code>
-      </pre>
+      <textarea
+        value={code}
+        onChange={(event) => onCodeChange(event.currentTarget.value)}
+        spellCheck={false}
+        className="code-editor"
+        aria-label="Editable LaTeX TikZ code"
+      />
       <div className="mt-3 flex flex-wrap gap-2">
         <button type="button" onClick={onCopy} title="Copy TikZ" className="icon-button">
           <Clipboard className="h-4 w-4" aria-hidden />
-          Copy TikZ
+          Copy
         </button>
         <button type="button" onClick={onDownload} title="Download .tex" className="icon-button-secondary">
           <Download className="h-4 w-4" aria-hidden />
-          Download .tex
+          .tex
+        </button>
+        <button type="button" onClick={onResetCode} disabled={!isCustom} title="Reset generated code" className="icon-button-secondary disabled:cursor-not-allowed disabled:opacity-45">
+          <RotateCcw className="h-4 w-4" aria-hidden />
+          Reset
         </button>
       </div>
     </section>
