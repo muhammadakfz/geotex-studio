@@ -4,6 +4,11 @@
 
 Web-based academic figure editor for creating, refining, linting, and exporting GeoGebra-style mathematical and physics diagrams into clean LaTeX/TikZ code.
 
+## Preview
+
+![GeoTeX Studio preview](public/login-page.png)
+![GeoTeX Studio preview](public/canvas-page.png)
+
 ## Features
 
 | Category | Capabilities |
