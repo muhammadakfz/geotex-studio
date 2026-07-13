@@ -11,18 +11,66 @@ interface LayerPanelProps {
   onCreateExpression?: (expression: string) => void;
 }
 
-function getAlgebraicString(object: DiagramObject): string {
-  if (object.type === "Point") return `${object.name}=(${object.coordinates.x}, ${object.coordinates.y})`;
-  if (object.type === "Line" && object.pointIds?.length === 2) return `Line(${object.pointIds[0]}, ${object.pointIds[1]})`;
-  if (object.type === "Line") return `Line((${object.through[0].x}, ${object.through[0].y}), (${object.through[1].x}, ${object.through[1].y}))`;
-  if (object.type === "Segment" && object.startPointId && object.endPointId) return `Segment(${object.startPointId}, ${object.endPointId})`;
-  if (object.type === "Segment") return `Segment((${object.start.x}, ${object.start.y}), (${object.end.x}, ${object.end.y}))`;
-  if (object.type === "Vector") return `Vector((${object.start.x}, ${object.start.y}), (${object.end.x}, ${object.end.y}))`;
-  if (object.type === "Circle") return `Circle((${object.center.x}, ${object.center.y}), ${object.radius.toFixed(2)})`;
-  if (object.type === "Polygon") return `Polygon(${object.points.length} vertices)`;
-  if (object.type === "FunctionPlot") return `f(x) = ${object.expression}`;
-  if (object.type === "Angle") return `Angle(${object.start.x}, ${object.vertex.x}, ${object.end.x})`;
+const commandExamples = [
+  "A=(1,2)",
+  "f(x)=sin(x)",
+  "Segment(A,B)",
+  "Circle(A,2)",
+  "Polygon(A,B,C)",
+  "M=Midpoint(A,B)",
+];
+
+function formatNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function coordinate(point: { x: number; y: number }): string {
+  return `(${formatNumber(point.x)}, ${formatNumber(point.y)})`;
+}
+
+function pointName(diagram: DiagramModel, pointId?: string): string | null {
+  if (!pointId) return null;
+
+  const point = diagram.objects.find((object) => object.id === pointId && object.type === "Point");
+  return point?.label || point?.name || pointId;
+}
+
+function getAlgebraicString(object: DiagramObject, diagram: DiagramModel): string {
+  if (object.type === "Point") return `${object.label || object.name} = ${coordinate(object.coordinates)}`;
+  if (object.type === "Line" && object.pointIds?.length === 2) {
+    return `Line(${object.pointIds.map((id) => pointName(diagram, id) ?? id).join(", ")})`;
+  }
+  if (object.type === "Line") return `Line(${coordinate(object.through[0])}, ${coordinate(object.through[1])})`;
+  if (object.type === "Segment" && object.startPointId && object.endPointId) {
+    return `Segment(${pointName(diagram, object.startPointId) ?? object.startPointId}, ${pointName(diagram, object.endPointId) ?? object.endPointId})`;
+  }
+  if (object.type === "Segment") return `Segment(${coordinate(object.start)}, ${coordinate(object.end)})`;
+  if (object.type === "Vector" && object.startPointId && object.endPointId) {
+    return `Vector(${pointName(diagram, object.startPointId) ?? object.startPointId}, ${pointName(diagram, object.endPointId) ?? object.endPointId})`;
+  }
+  if (object.type === "Vector") return `Vector(${coordinate(object.start)}, ${coordinate(object.end)})`;
+  if (object.type === "Circle") {
+    const centerName = pointName(diagram, object.centerPointId);
+    return `Circle(${centerName ?? coordinate(object.center)}, ${formatNumber(object.radius)})`;
+  }
+  if (object.type === "Polygon") {
+    const refs = object.pointIds?.map((id) => pointName(diagram, id) ?? id);
+    const edgeLabels = object.edgeLabels?.filter((label) => label.trim());
+    const suffix = edgeLabels?.length ? ` | edges: ${edgeLabels.join(", ")}` : "";
+    return `${refs?.length ? `Polygon(${refs.join(", ")})` : `Polygon(${object.points.length} vertices)`}${suffix}`;
+  }
+  if (object.type === "FunctionPlot") return `${object.label || "f(x)"} = ${object.expression}`;
+  if (object.type === "Angle" && object.pointIds?.length === 3) {
+    return `Angle(${object.pointIds.map((id) => pointName(diagram, id) ?? id).join(", ")})`;
+  }
+  if (object.type === "Angle") return `Angle(${coordinate(object.start)}, ${coordinate(object.vertex)}, ${coordinate(object.end)})`;
   return object.semanticRole;
+}
+
+function editableExpressionFor(object: DiagramObject, diagram: DiagramModel): string {
+  if (object.type === "Point") return `${object.label || object.name}=${coordinate(object.coordinates).replace(" ", "")}`;
+  if (object.type === "FunctionPlot") return `${object.label || "f(x)"}=${object.expression}`;
+  return getAlgebraicString(object, diagram).replaceAll(" ", "");
 }
 
 export function LayerPanel({
@@ -139,13 +187,12 @@ export function LayerPanel({
                 ) : (
                   <div
                     className="cursor-text truncate font-mono text-xs"
-                    onClick={() => {
-                      setEditingId(object.id);
-                      const prefix = (object.type === "Point" || object.type === "Line" || object.type === "Circle") ? `${object.name}=` : "";
-                      setEditValue(`${prefix}${getAlgebraicString(object)}`);
-                    }}
-                  >
-                    {getAlgebraicString(object)}
+                  onClick={() => {
+                    setEditingId(object.id);
+                      setEditValue(editableExpressionFor(object, diagram));
+                  }}
+                >
+                    {getAlgebraicString(object, diagram)}
                   </div>
                 )}
               </div>
@@ -162,9 +209,24 @@ export function LayerPanel({
             onKeyDown={(e) => {
               if (e.key === "Enter") handleCreateSubmit();
             }}
-            placeholder="New expression..."
+            aria-label="New algebra expression"
+            placeholder="A=(1,2), f(x)=sin(x), Segment(A,B)..."
             className="w-full bg-transparent font-mono text-xs text-black outline-none"
           />
+        </div>
+
+        <div className="algebra-command-grid">
+          {commandExamples.map((example) => (
+            <button
+              key={example}
+              type="button"
+              className="algebra-chip"
+              onClick={() => setNewValue(example)}
+              title={example}
+            >
+              {example}
+            </button>
+          ))}
         </div>
       </div>
     </section>

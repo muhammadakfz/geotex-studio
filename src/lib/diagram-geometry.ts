@@ -308,6 +308,14 @@ export function insertPolygonVertex(
   point: PointCoordinate,
 ): Extract<DiagramObject, { type: "Polygon" }> {
   const index = Math.max(0, Math.min(edgeIndex, object.points.length - 1));
+  const edgeLabels = object.edgeLabels
+    ? [
+        ...object.edgeLabels.slice(0, index + 1),
+        "",
+        ...object.edgeLabels.slice(index + 1),
+      ]
+    : undefined;
+
   return {
     ...object,
     points: [
@@ -315,6 +323,7 @@ export function insertPolygonVertex(
       { x: round(point.x), y: round(point.y) },
       ...object.points.slice(index + 1),
     ],
+    edgeLabels,
   };
 }
 

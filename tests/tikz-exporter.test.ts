@@ -62,6 +62,25 @@ describe("tikz exporter", () => {
     expect(exportResult.code).toContain("(3,0) -- (4,0) -- (3.5,1) -- cycle;");
   });
 
+  it("exports free edge labels on polygon sides", () => {
+    const diagram = createBlankDiagram();
+    const rectangleStart = createObjectFromTool("rectangle", { x: 0, y: 0 }, [], [], "");
+    const rectangleEnd = createObjectFromTool("rectangle", { x: 2, y: 1 }, rectangleStart.pendingPoints, [], "");
+
+    diagram.objects = [
+      {
+        ...rectangleEnd.object!,
+        edgeLabels: ["a", "12", "CD", ""],
+      },
+    ];
+    const exportResult = exportTikz(diagram);
+
+    expect(exportResult.code).toContain("node[midway, below] {$a$}");
+    expect(exportResult.code).toContain("node[midway, right] {$12$}");
+    expect(exportResult.code).toContain("node[midway, above] {$CD$}");
+    expect(exportResult.code).not.toContain(" -- cycle;");
+  });
+
   it("keeps cartesian guides out of exports unless requested", () => {
     const diagram = geometryFixture();
 

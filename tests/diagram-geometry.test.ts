@@ -88,6 +88,16 @@ describe("diagram geometry helpers", () => {
     ]);
   });
 
+  it("keeps polygon edge labels aligned when an edge receives a new vertex", () => {
+    const labelledRectangle = {
+      ...rectangle,
+      edgeLabels: ["a", "b", "c", "d"],
+    };
+    const pinned = insertPolygonVertex(labelledRectangle, 1, { x: 4, y: 1 });
+
+    expect(pinned.edgeLabels).toEqual(["a", "b", "", "c", "d"]);
+  });
+
   it("rotates a bounded shape around its center", () => {
     const rotated = rotateObject(rectangle, { x: 2, y: 1 }, Math.PI / 2);
 

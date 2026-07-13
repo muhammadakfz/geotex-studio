@@ -7,6 +7,7 @@ import type {
   PenPathObject,
   PointCoordinate,
   PointObject,
+  PolygonObject,
 } from "./diagram-types";
 import { normalizeLatexLabel, unwrapMathLabel, wrapMathLabel } from "./latex-normalizer";
 import { sampleFunctionPlot } from "./quick-constructs";
@@ -139,6 +140,37 @@ function labelFor(object: DiagramObject): string {
   });
 }
 
+function edgeLabelFor(label: string | undefined): string {
+  return normalizeLatexLabel(label, { type: "Label", semanticRole: "theorem-label" });
+}
+
+function polygonCentroid(points: PointCoordinate[]): PointCoordinate {
+  if (points.length === 0) return { x: 0, y: 0 };
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
+
+function polygonEdgePosition(points: PointCoordinate[], index: number): "above" | "below" | "left" | "right" {
+  const start = points[index];
+  const end = points[(index + 1) % points.length];
+  const center = polygonCentroid(points);
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.max(Math.hypot(dx, dy), 0.0001);
+  let normal = { x: -dy / length, y: dx / length };
+
+  if ((mid.x - center.x) * normal.x + (mid.y - center.y) * normal.y < 0) {
+    normal = { x: -normal.x, y: -normal.y };
+  }
+
+  return Math.abs(normal.y) >= Math.abs(normal.x)
+    ? normal.y >= 0 ? "above" : "below"
+    : normal.x >= 0 ? "right" : "left";
+}
+
 function exportPoint(object: PointObject, colors: Map<string, string>): string[] {
   const name = coordinateNameForPoint(object);
   const label = labelFor(object);
@@ -213,6 +245,25 @@ function exportPenPath(object: PenPathObject, colors: Map<string, string>): stri
   return `  \\draw[${styleOptions(object, colors)}] ${coordinates}${node};`;
 }
 
+function exportPolygon(object: PolygonObject, points: Map<string, PointObject>, colors: Map<string, string>): string {
+  const refs = object.points.map((point, index) => ref(object.pointIds?.[index], point, points));
+  const hasEdgeLabels = object.edgeLabels?.some((label) => label.trim());
+
+  if (!hasEdgeLabels) {
+    return `  \\draw[${styleOptions(object, colors)}] ${refs.join(" -- ")} -- cycle;`;
+  }
+
+  let path = refs[0] ?? "";
+  for (let index = 0; index < refs.length; index += 1) {
+    const next = refs[(index + 1) % refs.length];
+    const label = edgeLabelFor(object.edgeLabels?.[index]);
+    const node = label ? ` node[midway, ${polygonEdgePosition(object.points, index)}] {${label}}` : "";
+    path += ` --${node} ${next}`;
+  }
+
+  return `  \\draw[${styleOptions(object, colors)}] ${path};`;
+}
+
 function exportObject(object: DiagramObject, diagram: DiagramModel, points: Map<string, PointObject>, colors: Map<string, string>): string[] {
   if (!object.visibility) {
     return [];
@@ -243,15 +294,8 @@ function exportObject(object: DiagramObject, diagram: DiagramModel, points: Map<
       return [exportFunctionPlot(object, colors, diagram)];
     case "PenPath":
       return [exportPenPath(object, colors)];
-    case "Polygon": {
-      const coordinates = object.points
-        .map((point, index) => {
-          const pointId = object.pointIds?.[index];
-          return ref(pointId, point, points);
-        })
-        .join(" -- ");
-      return [`  \\draw[${styleOptions(object, colors)}] ${coordinates} -- cycle;`];
-    }
+    case "Polygon":
+      return [exportPolygon(object, points, colors)];
   }
 }
 

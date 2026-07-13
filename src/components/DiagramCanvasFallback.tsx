@@ -200,6 +200,35 @@ function midpoint(start: PointCoordinate, end: PointCoordinate): PointCoordinate
   return { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
 }
 
+function polygonCentroid(points: PointCoordinate[]): PointCoordinate {
+  if (points.length === 0) return { x: 0, y: 0 };
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
+
+function polygonEdgeLabelAnchor(points: PointCoordinate[], index: number): PointCoordinate {
+  const start = points[index];
+  const end = points[(index + 1) % points.length];
+  const center = polygonCentroid(points);
+  const mid = midpoint(start, end);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.max(Math.hypot(dx, dy), 0.0001);
+  let normal = { x: -dy / length, y: dx / length };
+  const outward = (mid.x - center.x) * normal.x + (mid.y - center.y) * normal.y;
+
+  if (outward < 0) {
+    normal = { x: -normal.x, y: -normal.y };
+  }
+
+  return {
+    x: mid.x + normal.x * 0.24,
+    y: mid.y + normal.y * 0.24,
+  };
+}
+
 function labelOffset(position?: string): PointCoordinate {
   switch (position) {
     case "above":
@@ -260,6 +289,48 @@ function renderLabel(
     >
       {labelText(label)}
     </text>
+  );
+}
+
+function renderPolygonEdgeLabels(
+  object: Extract<DiagramObject, { type: "Polygon" }>,
+  diagram: DiagramModel,
+  canvas: CanvasSize = defaultCanvasSize,
+): React.ReactNode {
+  if (!object.edgeLabels?.some((label) => label.trim())) return null;
+
+  return (
+    <g pointerEvents="none">
+      {object.edgeLabels.map((label, index) => {
+        const text = labelText(label);
+        if (!text || index >= object.points.length) return null;
+
+        const anchor = toSvg(polygonEdgeLabelAnchor(object.points, index), diagram, canvas);
+        const width = Math.max(18, text.length * 8 + 12);
+
+        return (
+          <g key={`${object.id}-edge-label-${index}`}>
+            <rect
+              x={anchor.x - width / 2}
+              y={anchor.y - 12}
+              width={width}
+              height="20"
+              fill="#ffffff"
+              stroke="#111111"
+              strokeWidth="1.2"
+            />
+            <text
+              x={anchor.x}
+              y={anchor.y + 3}
+              textAnchor="middle"
+              className="select-none fill-black font-mono text-[12px] font-bold"
+            >
+              {text}
+            </text>
+          </g>
+        );
+      })}
+    </g>
   );
 }
 
@@ -874,7 +945,12 @@ function renderObject(
         const svg = toSvg(point, diagram, canvas);
         return `${svg.x},${svg.y}`;
       });
-      return <polygon key={object.id} points={points.join(" ")} {...shared} {...styleFor(object, selected)} />;
+      return (
+        <g key={object.id} {...shared}>
+          <polygon points={points.join(" ")} {...styleFor(object, selected)} />
+          {renderPolygonEdgeLabels(object, diagram, canvas)}
+        </g>
+      );
     }
     case "PenPath": {
       const points = object.points.map((point) => {

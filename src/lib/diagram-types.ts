@@ -140,6 +140,7 @@ export interface PolygonObject extends BaseDiagramObject {
   type: "Polygon";
   points: PointCoordinate[];
   pointIds?: string[];
+  edgeLabels?: string[];
 }
 
 export interface PenPathObject extends BaseDiagramObject {

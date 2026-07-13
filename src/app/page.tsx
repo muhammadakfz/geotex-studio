@@ -55,7 +55,7 @@ export default function Home() {
     replaceDiagram,
   } = useDiagramEditor();
 
-  const [activeInspectorTab, setActiveInspectorTab] = useState<InspectorTab>("style");
+  const [activeInspectorTab, setActiveInspectorTab] = useState<InspectorTab>("algebra");
   const [includeCartesianExport, setIncludeCartesianExport] = useState(false);
   const cloudEnabled = isSupabaseConfigured();
   const [activePresetId, setActivePresetId] = useState("thesis-paper");

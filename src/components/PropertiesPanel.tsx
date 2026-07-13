@@ -13,6 +13,7 @@ export interface ObjectPatch {
   name?: string;
   label?: string;
   text?: string;
+  edgeLabels?: string[];
   visibility?: boolean;
   semanticRole?: SemanticRole;
   style?: Partial<DiagramStyle>;
@@ -109,6 +110,10 @@ function canMirror(object: DiagramObject): boolean {
   return object.type !== "Point" && object.type !== "Label" && object.type !== "Circle";
 }
 
+function polygonEdgeLabels(object: Extract<DiagramObject, { type: "Polygon" }>): string[] {
+  return Array.from({ length: object.points.length }, (_, index) => object.edgeLabels?.[index] ?? "");
+}
+
 export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
   if (!object) {
     return (
@@ -202,6 +207,30 @@ export function PropertiesPanel({ object, onChange }: PropertiesPanelProps) {
           <GeometryField label="W" value={geometry.w} min={0} onCommit={(value) => updateGeometry("w", value)} />
           <GeometryField label="H" value={geometry.h} min={0} onCommit={(value) => updateGeometry("h", value)} />
         </div>
+
+        {object.type === "Polygon" ? (
+          <div className="edge-label-editor">
+            <div className="edge-label-heading">
+              <span>Edge labels</span>
+              <span>{object.points.length}</span>
+            </div>
+            {polygonEdgeLabels(object).map((edgeLabel, index, labels) => (
+              <label key={`${object.id}-edge-${index}`} className="edge-label-row">
+                <span>{`E${index + 1}`}</span>
+                <input
+                  value={edgeLabel}
+                  placeholder={index === 0 ? "a, AB, 12, ..." : ""}
+                  onChange={(event) => {
+                    const next = [...labels];
+                    next[index] = event.target.value;
+                    onChange({ edgeLabels: next });
+                  }}
+                  className="property-input"
+                />
+              </label>
+            ))}
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-2 gap-2">
           <button

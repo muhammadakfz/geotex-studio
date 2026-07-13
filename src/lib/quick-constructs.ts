@@ -40,8 +40,33 @@ function stripFunctionPrefix(expression: string): string {
   return expression
     .trim()
     .replace(/^y\s*=/i, "")
-    .replace(/^f\s*\(\s*x\s*\)\s*=/i, "")
+    .replace(/^[A-Za-z][A-Za-z0-9_]*\s*\(\s*x\s*\)\s*=/i, "")
     .trim();
+}
+
+function functionLabel(expression: string): string {
+  const match = expression.trim().match(/^([A-Za-z][A-Za-z0-9_]*)\s*\(\s*x\s*\)\s*=/i);
+  return match ? `${match[1]}(x)` : "f(x)";
+}
+
+function splitAssignment(expression: string): { name: string; body: string } | null {
+  const match = expression.trim().match(/^([A-Za-z](?:[A-Za-z0-9_]*|_[0-9]+)?)\s*=\s*(.+)$/);
+  if (!match) return null;
+
+  const [, name, body] = match;
+  if (/^[xy]$/i.test(name)) return null;
+  return { name, body: body.trim() };
+}
+
+function splitArgs(rawArgs: string): string[] {
+  return rawArgs
+    .split(",")
+    .map((arg) => arg.trim())
+    .filter(Boolean);
+}
+
+function pointDistance(a: PointCoordinate, b: PointCoordinate): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function addImplicitMultiplication(expression: string): string {
@@ -105,6 +130,9 @@ export function createFunctionPlotObject(
 ): FunctionPlotResult {
   const sequence = objects.length + 1;
   const expr = expression.trim();
+  const assignment = splitAssignment(expr);
+  const commandExpr = assignment?.body ?? expr;
+  const assignedName = assignment?.name;
 
   // Parse points like A=(1,2) or (1,2)
   const pointMatch = expr.match(/^(?:([A-Za-z](?:_[0-9]+)?)\s*=\s*)?\(\s*([+-]?[0-9]*\.?[0-9]+)\s*,\s*([+-]?[0-9]*\.?[0-9]+)\s*\)$/);
@@ -138,9 +166,13 @@ export function createFunctionPlotObject(
 
   type PointObj = Extract<DiagramObject, { type: "Point" }>;
   const findPoint = (name: string) => objects.find((o) => (o.id === name || o.name === name || o.label === name) && o.type === "Point") as PointObj | undefined;
+  const pointsFromNames = (names: string[]): PointObj[] | null => {
+    const found = names.map(findPoint);
+    return found.every(Boolean) ? found as PointObj[] : null;
+  };
 
   // Segment(A, B)
-  const segmentMatch = expr.match(/^Segment\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
+  const segmentMatch = commandExpr.match(/^Segment\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
   if (segmentMatch) {
     const p1 = findPoint(segmentMatch[1]);
     const p2 = findPoint(segmentMatch[2]);
@@ -148,8 +180,9 @@ export function createFunctionPlotObject(
       return {
         object: {
           id: makeId("segment", sequence),
-          name: `Segment ${segmentMatch[1]}${segmentMatch[2]}`,
+          name: assignedName || `Segment ${segmentMatch[1]}${segmentMatch[2]}`,
           type: "Segment",
+          label: assignedName,
           visibility: true,
           start: p1.coordinates,
           end: p2.coordinates,
@@ -166,7 +199,7 @@ export function createFunctionPlotObject(
   }
 
   // Line(A, B)
-  const lineMatch = expr.match(/^Line\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
+  const lineMatch = commandExpr.match(/^Line\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
   if (lineMatch) {
     const p1 = findPoint(lineMatch[1]);
     const p2 = findPoint(lineMatch[2]);
@@ -174,8 +207,9 @@ export function createFunctionPlotObject(
       return {
         object: {
           id: makeId("line", sequence),
-          name: `Line ${lineMatch[1]}${lineMatch[2]}`,
+          name: assignedName || `Line ${lineMatch[1]}${lineMatch[2]}`,
           type: "Line",
+          label: assignedName,
           visibility: true,
           through: [p1.coordinates, p2.coordinates],
           pointIds: [p1.id, p2.id],
@@ -192,7 +226,7 @@ export function createFunctionPlotObject(
   }
 
   // Vector(A, B)
-  const vectorMatch = expr.match(/^Vector\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
+  const vectorMatch = commandExpr.match(/^Vector\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
   if (vectorMatch) {
     const p1 = findPoint(vectorMatch[1]);
     const p2 = findPoint(vectorMatch[2]);
@@ -200,9 +234,9 @@ export function createFunctionPlotObject(
       return {
         object: {
           id: makeId("vector", sequence),
-          name: `Vector ${vectorMatch[1]}${vectorMatch[2]}`,
+          name: assignedName || `Vector ${vectorMatch[1]}${vectorMatch[2]}`,
           type: "Vector",
-          label: "",
+          label: assignedName ?? "",
           visibility: true,
           start: p1.coordinates,
           end: p2.coordinates,
@@ -219,42 +253,121 @@ export function createFunctionPlotObject(
   }
 
   // Circle(A, radius)
-  const circleMatch = expr.match(/^Circle\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([+-]?[0-9]*\.?[0-9]+)\s*\)$/i);
+  const circleMatch = commandExpr.match(/^Circle\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([^)]+)\s*\)$/i);
   if (circleMatch) {
     const p1 = findPoint(circleMatch[1]);
-    const radius = parseFloat(circleMatch[2]);
-    if (p1) {
+    const radiusPoint = findPoint(circleMatch[2].trim());
+    const radius = radiusPoint && p1 ? pointDistance(p1.coordinates, radiusPoint.coordinates) : parseFloat(circleMatch[2]);
+    if (p1 && Number.isFinite(radius) && radius > 0) {
       return {
         object: {
           id: makeId("circle", sequence),
-          name: `Circle ${circleMatch[1]} r=${radius}`,
+          name: assignedName || `Circle ${circleMatch[1]} r=${round(radius)}`,
           type: "Circle",
+          label: assignedName,
           visibility: true,
           center: p1.coordinates,
           centerPointId: p1.id,
-          radius,
+          radius: round(radius),
           semanticRole: "main-object",
           style: { stroke: "#111111", fill: "transparent", strokeWidth: 1.35 },
         },
       };
     }
-    return { object: null, error: "Point not found." };
+    return { object: null, error: p1 ? "Circle radius is invalid." : "Point not found." };
   }
 
-  try {
-    const { normalizedExpression, samples } = sampleFunctionPlot(expression, viewport);
-    if (samples.length < 2) {
-      return { object: null, error: "Expression has too few visible samples." };
+  const polygonMatch = commandExpr.match(/^Polygon\s*\((.+)\)$/i);
+  if (polygonMatch) {
+    const names = splitArgs(polygonMatch[1]);
+    const polygonPoints = pointsFromNames(names);
+    if (!polygonPoints || polygonPoints.length < 3) {
+      return { object: null, error: "Polygon needs at least three existing points." };
     }
 
     return {
       object: {
-        id: makeId("function", sequence),
-        name: `f(x) ${sequence}`,
-        type: "FunctionPlot",
-        label: "f(x)",
+        id: makeId("polygon", sequence),
+        name: assignedName || `Polygon ${names.join("")}`,
+        type: "Polygon",
+        label: assignedName || names.join(""),
         visibility: true,
-        expression: stripFunctionPrefix(expression),
+        points: polygonPoints.map((point) => point.coordinates),
+        pointIds: polygonPoints.map((point) => point.id),
+        semanticRole: "main-object",
+        style: { stroke: "#111111", fill: "transparent", strokeWidth: 1.25 },
+      },
+    };
+  }
+
+  const angleMatch = commandExpr.match(/^Angle\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
+  if (angleMatch) {
+    const p1 = findPoint(angleMatch[1]);
+    const vertex = findPoint(angleMatch[2]);
+    const p3 = findPoint(angleMatch[3]);
+    if (!p1 || !vertex || !p3) {
+      return { object: null, error: "Angle points not found." };
+    }
+
+    return {
+      object: {
+        id: makeId("angle", sequence),
+        name: assignedName || `Angle ${angleMatch[1]}${angleMatch[2]}${angleMatch[3]}`,
+        type: "Angle",
+        label: assignedName ?? "",
+        visibility: true,
+        start: p1.coordinates,
+        vertex: vertex.coordinates,
+        end: p3.coordinates,
+        pointIds: [p1.id, vertex.id, p3.id],
+        anchors: [
+          { kind: "point", objectId: p1.id },
+          { kind: "point", objectId: vertex.id },
+          { kind: "point", objectId: p3.id },
+        ],
+        radius: 0.55,
+        semanticRole: "theorem-label",
+        style: { stroke: "#111111", strokeWidth: 1.2, labelPosition: "above-right" },
+      },
+    };
+  }
+
+  const midpointMatch = commandExpr.match(/^Midpoint\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)\s*\)$/i);
+  if (midpointMatch) {
+    const p1 = findPoint(midpointMatch[1]);
+    const p2 = findPoint(midpointMatch[2]);
+    if (!p1 || !p2) {
+      return { object: null, error: "Midpoint points not found." };
+    }
+
+    const name = assignedName || `M_${midpointMatch[1]}${midpointMatch[2]}`;
+    return {
+      object: {
+        ...pointObject(makeId("point", sequence), name, {
+          x: round((p1.coordinates.x + p2.coordinates.x) / 2),
+          y: round((p1.coordinates.y + p2.coordinates.y) / 2),
+        }),
+        semanticRole: "auxiliary-point",
+      },
+    };
+  }
+
+  try {
+    const plotExpression = assignment ? commandExpr : expression;
+    const { normalizedExpression, samples } = sampleFunctionPlot(plotExpression, viewport);
+    if (samples.length < 2) {
+      return { object: null, error: "Expression has too few visible samples." };
+    }
+
+    const label = assignedName || functionLabel(expression);
+    return {
+      object: {
+        id: makeId("function", sequence),
+        name: `${label} ${sequence}`,
+        type: "FunctionPlot",
+        label,
+        visibility: true,
+        expression: stripFunctionPrefix(plotExpression),
         domain: [viewport.minX, viewport.maxX],
         samples,
         semanticRole: "function-curve",

@@ -1340,6 +1340,38 @@ button {
   padding: 8px;
 }
 
+.algebra-command-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.algebra-chip {
+  min-width: 0;
+  overflow: hidden;
+  border: 2px solid var(--pixel-ink);
+  background: #ffffff;
+  padding: 6px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-geist-mono), "Courier New", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  text-align: left;
+  box-shadow: 2px 2px 0 var(--pixel-ink);
+  transition:
+    background 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.algebra-chip:hover {
+  background: #f2f2f2;
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--pixel-ink);
+}
+
 .property-stack,
 .property-tile {
   display: grid;
@@ -1357,6 +1389,54 @@ button {
 
 .geometry-grid .property-input {
   padding: 0 8px;
+}
+
+.edge-label-editor {
+  display: grid;
+  gap: 7px;
+  border: 2px solid var(--pixel-ink);
+  background: #ffffff;
+  padding: 8px;
+}
+
+.edge-label-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 2px solid var(--pixel-ink);
+  padding-bottom: 7px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.edge-label-heading span:last-child {
+  display: inline-flex;
+  min-width: 22px;
+  justify-content: center;
+  border: 2px solid var(--pixel-ink);
+  background: #111111;
+  padding: 1px 5px;
+  color: #ffffff;
+}
+
+.edge-label-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+
+.edge-label-row > span {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--pixel-ink);
+  background: #f2f2f2;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 /* --- UI Polish: Tactile Interactions & Focus --- */

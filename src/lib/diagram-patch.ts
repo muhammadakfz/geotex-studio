@@ -3,7 +3,7 @@ import { applyObjectGeometryPatch, mirrorObject } from "./diagram-geometry";
 import type { ObjectPatch } from "@/components/PropertiesPanel";
 
 export function patchObject(object: DiagramObject, patch: ObjectPatch): DiagramObject {
-  const { style, text, geometry, lineKind, transform, ...rest } = patch;
+  const { style, text, edgeLabels, geometry, lineKind, transform, ...rest } = patch;
   let base = geometry ? applyObjectGeometryPatch(object, geometry) : object;
 
   if (lineKind && object.type !== (lineKind === "line" ? "Line" : "Segment")) {
@@ -17,6 +17,9 @@ export function patchObject(object: DiagramObject, patch: ObjectPatch): DiagramO
   const next = {
     ...base,
     ...rest,
+    ...(base.type === "Polygon" && edgeLabels
+      ? { edgeLabels: edgeLabels.slice(0, base.points.length) }
+      : {}),
     style: {
       ...base.style,
       ...style,
